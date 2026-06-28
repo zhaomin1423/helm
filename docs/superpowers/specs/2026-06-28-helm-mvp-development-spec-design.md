@@ -121,7 +121,7 @@ Acceptance criteria:
 
 ### 4.2 `helm-agent-engine`
 
-`helm-agent-engine` is Helm's internal agent/model execution layer. It replaces the Pi responsibilities described in the design with first-party Java types.
+`helm-agent-engine` is Helm's internal agent/model execution layer. It owns the core loop and streaming boundaries using first-party Java types.
 
 Required components:
 

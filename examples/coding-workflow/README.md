@@ -68,7 +68,7 @@ GitHub token、仓库路径和 PR 创建权限都留在应用代码中。模型�
 ```text
 examples/coding-workflow/
   README.md
-  src/main/java/io/github/zhaomin/helm/examples/codingworkflow/
+  src/main/java/io/agent/helm/examples/codingworkflow/
     CodingAgent.java
     CodingWorkflow.java
     CodingWorkflowInput.java
@@ -83,7 +83,7 @@ examples/coding-workflow/
 
 ## Workflow 设计
 
-核心 workflow 位于 [`CodingWorkflow.java`](src/main/java/io/github/zhaomin/helm/examples/codingworkflow/CodingWorkflow.java)。
+核心 workflow 位于 [`CodingWorkflow.java`](src/main/java/io/agent/helm/examples/codingworkflow/CodingWorkflow.java)。
 
 执行阶段：
 
@@ -100,8 +100,14 @@ examples/coding-workflow/
 ## 目标 API 示例
 
 ```java
-WorkflowRunHandle run = workflowRuntime.invoke(
-    WorkflowInvokeRequest.of(
+WorkflowRuntime workflowRuntime = WorkflowRuntime.builder()
+    .workflow(new CodingWorkflow(githubTools))
+    .provider(new FakeProvider("fake"))
+    .store(new InMemoryRuntimeStore())
+    .build();
+
+WorkflowRunHandle<CodingWorkflowOutput> run = workflowRuntime.invoke(
+    new WorkflowInvokeRequest<>(
         "coding-workflow",
         new CodingWorkflowInput(
             "acme",

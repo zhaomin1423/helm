@@ -1,6 +1,6 @@
 # Helm MVP 设计文档
 
-Helm 是一个面向 Java 生态的 Agent Harness Framework。它借鉴 Flue 的核心架构：模型不是一个孤立的聊天 API，而是运行在一个可编程 harness 中，通过 session、tool、skill、sandbox、workflow、事件流和持久化完成真实工作。
+Helm 是一个面向 Java 生态的 Agent Harness Framework。它的核心思想是：模型不是一个孤立的聊天 API，而是运行在一个可编程 harness 中，通过 session、tool、skill、sandbox、workflow、事件流和持久化完成真实工作。
 
 本文档定义 Helm 的 MVP 设计。已确认的路线是 **Core-first**：先实现不绑定 Web 框架的 Java Runtime Core，再在外层提供 Spring Boot、HTTP、CLI、Provider、Sandbox、Persistence 等集成。
 
@@ -288,13 +288,11 @@ Session store 必须维护 session version。持久化实现使用 optimistic lo
 
 ### 6.4 Agent Engine
 
-`helm-agent-engine` 是 Helm 内部的 Agent/Model 内核层，用来替代 Flue 中由 `@earendil-works/pi-agent-core` 和 `@earendil-works/pi-ai` 承担的职责。
+`helm-agent-engine` 是 Helm 内部的 Agent/Model 内核层，负责承接模型调用、agent loop、消息归一化、tool-call 编排和上下文管理等底层职责。
 
-Flue 使用 Pi 处理通用模型和 agent 机制：消息类型、content block、模型 catalog metadata、streaming model call、tool-call 编排、agent loop state、usage 统计、context overflow 判断和 compaction 支持。Helm 实现时应该参考这些边界，但不能依赖 Pi，也不应该暴露 Pi 兼容类型。Pi 是 TypeScript 生态的实现，如果 Helm 依赖它，会把 Java API 锁定到另一个项目的消息模型和 streaming 语义上。
+Engine 使用 Helm 自己的稳定 Java 类型定义运行边界，避免公开 API 被任何外部实现或特定 provider 的消息模型、streaming 语义锁定。
 
-Helm 使用自己的稳定 Java 类型承接这些职责：
-
-| Pi 在 Flue 中的职责 | Helm 组件 |
+| 内核职责 | Helm 组件 |
 | --- | --- |
 | Agent loop 和状态 | `AgentLoop` |
 | 一次模型 round trip | `TurnRunner` |
@@ -879,4 +877,4 @@ Helm MVP 应该是一个小而完整的 Java Agent Harness Framework。第一版
 7. Sandbox 是执行边界。
 8. Provider、Persistence、HTTP、CLI、Spring Boot 都是可替换集成。
 
-这样 Helm 能保留 Flue 的架构精神，同时自然适配 Java 生态。
+这样 Helm 能保持清晰的 harness-first 架构，同时自然适配 Java 生态。

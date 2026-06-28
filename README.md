@@ -119,11 +119,9 @@ helm/
   examples/
 ```
 
-## 与 Flue / Pi 的关系
+## Agent Engine 边界
 
-Helm 的设计参考 Flue 的 harness-first 架构。Flue 在 TypeScript 生态中依赖 `pi-agent-core` 和 `pi-ai` 处理 agent loop、消息模型、streaming、tool calling、usage 和上下文溢出等底层能力。
-
-Helm 不依赖 Pi，也不暴露 Pi 类型。Java 版会通过第一方 `helm-agent-engine` 实现等价边界：
+Helm 使用第一方 `helm-agent-engine` 承担模型运行时的核心职责，并通过稳定的 Java API 暴露清晰边界：
 
 - `AgentLoop`
 - `TurnRunner`
@@ -133,7 +131,7 @@ Helm 不依赖 Pi，也不暴露 Pi 类型。Java 版会通过第一方 `helm-ag
 - `TokenUsage`
 - `ContextOverflowException`
 
-这样可以保留 Flue 的架构思想，同时让 Helm 拥有稳定、自然的 Java API。
+这些类型共同覆盖 agent loop、消息模型、streaming、tool calling、usage 统计和上下文溢出处理，使 Helm 在保持 harness-first 架构思想的同时，拥有稳定、自然的 Java API。
 
 ## 设计原则
 
