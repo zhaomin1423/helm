@@ -1,0 +1,170 @@
+# Helm
+
+> 面向 Java 生态的 Agent Harness Framework。
+
+Helm 用 Java 构建可编程的 AI Agent 运行时。它不是一个简单的 LLM SDK 包装器，而是为模型提供完整 harness：session、tool、skill、sandbox、workflow、事件流、持久化和可替换的模型 provider。
+
+项目当前处于 **MVP 设计阶段**。完整设计见 [`docs/helm-mvp-design.md`](docs/helm-mvp-design.md)。
+
+## 为什么是 Helm？
+
+大模型本身只能接收输入并生成输出。要让它完成真实任务，还需要一个运行环境：它要能保留上下文、调用受控工具、读写文件、在安全边界内执行命令，并把每次运行记录下来。
+
+Helm 的目标是把这些能力做成 Java 开发者熟悉的框架：
+
+- **Agent**：适合持续会话、外部事件和长期上下文。
+- **Workflow**：适合一次性、可检查、有明确输入输出的后台任务。
+- **Tool**：把数据库、业务服务和外部 API 封装成模型可调用的窄能力。
+- **Skill**：把可复用经验、流程和说明打包给 Agent 使用。
+- **Sandbox**：为文件系统和 shell 操作提供受控边界。
+- **Provider SPI**：用统一接口接入 OpenAI、Anthropic、本地模型或企业网关。
+
+## 特性规划
+
+| 能力 | MVP 规划 |
+| --- | --- |
+| Core-first runtime | 核心运行时不绑定 Spring、Servlet、Netty 或其他 Web 框架。 |
+| Agent engine | 内置 `helm-agent-engine`，负责 agent loop、turn、stream、tool-call 编排和 compaction。 |
+| Typed tools | 使用 Java 类型定义 tool 输入输出，并生成模型可理解的 schema。 |
+| Persistent sessions | 保存 Agent session、operation、消息历史和事件。 |
+| Finite workflows | 支持有限任务运行、状态查询、结果返回和事件检查。 |
+| Replaceable providers | 通过 `ModelProvider` SPI 接入不同模型供应商。 |
+| Sandbox SPI | 支持内存 sandbox 和本地开发 sandbox，后续可扩展到容器或远程 sandbox。 |
+| Spring Boot starter | 提供自动配置、bean discovery 和 HTTP route 挂载。 |
+| CLI | 提供 `helm dev`、`helm run`、`helm inspect` 等本地开发命令。 |
+
+## 快速示例
+
+> 以下 API 是 MVP 设计目标，实际实现可能随开发推进调整。
+
+定义一个 Agent：
+
+```java
+public final class AssistantAgent implements AgentDefinition {
+    @Override
+    public AgentConfig configure(AgentContext context) {
+        return AgentConfig.builder()
+            .model("openai/gpt-4.1")
+            .instructions("You are a helpful assistant.")
+            .tool(new WeatherTool())
+            .sandbox(Sandboxes.inMemory())
+            .build();
+    }
+}
+```
+
+定义一个 Workflow：
+
+```java
+public final class ReviewWorkflow implements WorkflowDefinition<ReviewInput, ReviewOutput> {
+    @Override
+    public WorkflowConfig config() {
+        return WorkflowConfig.builder()
+            .agent(new AssistantAgent())
+            .build();
+    }
+
+    @Override
+    public ReviewOutput run(WorkflowContext<ReviewInput> context) throws Exception {
+        AgentSession session = context.harness().session("default");
+        PromptResult result = session.prompt("Review this document: " + context.input().content());
+        return new ReviewOutput(result.text());
+    }
+}
+```
+
+计划中的本地运行方式：
+
+```bash
+helm run review --input '{"content":"..."}'
+helm dev
+```
+
+## 架构概览
+
+```text
+Application code
+  -> AgentRuntime / WorkflowRuntime
+    -> HarnessFactory
+      -> ProviderRegistry
+      -> ToolRegistry
+      -> SkillRegistry
+      -> SandboxFactory
+    -> OperationRunner
+      -> AgentEngine
+        -> TurnRunner
+        -> ModelStreamNormalizer
+        -> ToolCallOrchestrator
+        -> ContextManager
+    -> RuntimeStore
+    -> EventBus
+```
+
+推荐模块结构：
+
+```text
+helm/
+  helm-core/
+  helm-agent-engine/
+  helm-runtime/
+  helm-http-core/
+  helm-http-servlet/
+  helm-cli/
+  helm-spring-boot-starter/
+  helm-provider-openai/
+  helm-provider-anthropic/
+  helm-sandbox-local/
+  helm-persistence-jdbc/
+  helm-observability-logging/
+  examples/
+```
+
+## 与 Flue / Pi 的关系
+
+Helm 的设计参考 Flue 的 harness-first 架构。Flue 在 TypeScript 生态中依赖 `pi-agent-core` 和 `pi-ai` 处理 agent loop、消息模型、streaming、tool calling、usage 和上下文溢出等底层能力。
+
+Helm 不依赖 Pi，也不暴露 Pi 类型。Java 版会通过第一方 `helm-agent-engine` 实现等价边界：
+
+- `AgentLoop`
+- `TurnRunner`
+- `ModelStreamEvent`
+- `ToolCallOrchestrator`
+- `ContextManager`
+- `TokenUsage`
+- `ContextOverflowException`
+
+这样可以保留 Flue 的架构思想，同时让 Helm 拥有稳定、自然的 Java API。
+
+## 设计原则
+
+1. **核心稳定**：`helm-core` 只定义 Helm 自己的公开类型和 SPI。
+2. **外部隔离**：模型 SDK、数据库、Web 框架、Sandbox 服务都放在 adapter 模块中。
+3. **能力收窄**：模型只能调用应用显式注册的 tool，不能直接接触宽泛客户端或凭据。
+4. **安全默认**：shell 默认关闭，HTTP 暴露默认关闭，事件日志需要避免 secret。
+5. **可观测**：每个 run、operation、turn、tool call、provider call 都应产生结构化事件。
+
+## 路线图
+
+| 阶段 | 内容 |
+| --- | --- |
+| Milestone 1 | `helm-core`、`helm-agent-engine`、`helm-runtime`、`FakeProvider`、`InMemoryRuntimeStore` |
+| Milestone 2 | OpenAI / Anthropic provider、Skill loading、In-memory sandbox、Local sandbox |
+| Milestone 3 | HTTP routes、`helm dev`、`helm run`、run inspection |
+| Milestone 4 | Spring Boot starter、自动配置、bean discovery、示例项目 |
+| Milestone 5 | JDBC store、schema migrations、event persistence、logging observer |
+
+## 文档
+
+- [Helm MVP 设计文档](docs/helm-mvp-design.md)
+
+## 示例
+
+- [Coding Workflow](examples/coding-workflow/)：从 GitHub issue 读取需求，设计方案，审查设计，开发代码，执行验证，代码审查并创建 pull request 的软件开发自动化 workflow。
+
+## 状态
+
+Helm 目前还不是可用发布版本。当前仓库用于沉淀架构设计、API 形态和实现计划。
+
+## License
+
+License 尚未确定。
