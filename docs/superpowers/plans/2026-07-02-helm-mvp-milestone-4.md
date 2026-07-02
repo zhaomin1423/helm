@@ -18,8 +18,7 @@
 ## Task 1: 自动配置骨架
 
 - `HelmAutoConfiguration` + `AutoConfiguration.imports` 注册。
-- 构建 `HelmRuntime` Bean：默认 `InMemoryRuntimeStore` 与事件总线，允许用户 Bean 覆盖（`@ConditionalOnMissingBean`）。
-
+- 构建 `AgentRuntime` / `WorkflowRuntime` Bean：默认 `InMemoryRuntimeStore` 与事件总线，允许用户 Bean 覆盖（`@ConditionalOnMissingBean`）。
 ## Task 2: 组件发现
 
 - 收集应用上下文中所有 `AgentDefinition`、`WorkflowDefinition<?, ?>`、`Tool<?, ?>`、`ModelProvider`、`SkillDefinition`、`Sandbox` Bean 并注册。
