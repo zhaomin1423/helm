@@ -119,6 +119,6 @@ M1 Core Runtime（已完成）
  │     └── M3b helm-http-servlet
  │           └── M3c helm-cli（helm dev 依赖 servlet adapter）
  │                 └── M4 Spring Boot Starter（依赖 http-core 暴露 route）
- └── M5a helm-persistence-jdbc           ── 可并行（仅依赖 RuntimeStore SPI）
-       └── M5b helm-observability-logging
+ ├── M5a helm-persistence-jdbc           ── 可并行（仅依赖 RuntimeStore SPI）
+ └── M5b helm-observability-logging      ── 可并行（仅依赖 `helm-core` 事件类型）
 ```
