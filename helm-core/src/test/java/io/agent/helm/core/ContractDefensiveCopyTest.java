@@ -9,7 +9,9 @@ import io.agent.helm.core.model.ModelRef;
 import io.agent.helm.core.sandbox.SandboxCommand;
 import io.agent.helm.core.store.AgentSessionState;
 import io.agent.helm.core.store.OperationRecord;
+import io.agent.helm.core.store.OperationStatus;
 import io.agent.helm.core.store.WorkflowRunRecord;
+import io.agent.helm.core.store.WorkflowRunStatus;
 import io.agent.helm.core.tool.Tool;
 import io.agent.helm.core.tool.ToolContext;
 import io.agent.helm.core.type.JsonSchema;
@@ -172,7 +174,7 @@ final class ContractDefensiveCopyTest {
                 "id",
                 "session",
                 "type",
-                "failed",
+                OperationStatus.FAILED,
                 null,
                 null,
                 error,
@@ -192,7 +194,7 @@ final class ContractDefensiveCopyTest {
         WorkflowRunRecord record = new WorkflowRunRecord(
                 "id",
                 "workflow",
-                "failed",
+                WorkflowRunStatus.FAILED,
                 null,
                 null,
                 error,

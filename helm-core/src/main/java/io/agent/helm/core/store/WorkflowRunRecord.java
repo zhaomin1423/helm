@@ -7,13 +7,14 @@ import java.util.Objects;
 public record WorkflowRunRecord(
         String id,
         String workflowName,
-        String status,
+        WorkflowRunStatus status,
         Object input,
         Object output,
         Map<String, Object> error,
         Instant createdAt,
         Instant completedAt) {
     public WorkflowRunRecord {
+        status = Objects.requireNonNull(status, "status");
         error = Map.copyOf(Objects.requireNonNull(error, "error"));
     }
 }

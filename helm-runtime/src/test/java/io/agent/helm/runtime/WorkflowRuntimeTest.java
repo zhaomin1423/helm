@@ -9,9 +9,11 @@ import io.agent.helm.core.agent.AgentDefinition;
 import io.agent.helm.core.agent.PromptResult;
 import io.agent.helm.core.error.SessionBusyException;
 import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.event.RuntimeEventType;
 import io.agent.helm.core.model.ModelStreamEvent;
 import io.agent.helm.core.model.TokenUsage;
 import io.agent.helm.core.store.WorkflowRunRecord;
+import io.agent.helm.core.store.WorkflowRunStatus;
 import io.agent.helm.core.type.TypeDescriptor;
 import io.agent.helm.core.workflow.WorkflowConfig;
 import io.agent.helm.core.workflow.WorkflowContext;
@@ -40,7 +42,24 @@ final class WorkflowRuntimeTest {
                 runtime.invoke(new WorkflowInvokeRequest<>("summarize", new Input("long text")));
 
         assertThat(handle.result().text()).isEqualTo("summary");
-        assertThat(store.loadWorkflowRun(handle.runId())).isPresent();
+        assertThat(runtime.getRun(handle.runId()))
+                .isPresent()
+                .get()
+                .extracting(WorkflowRunRecord::status, WorkflowRunRecord::output)
+                .containsExactly(WorkflowRunStatus.SUCCEEDED, handle.result());
+        assertThat(runtime.listRuns()).extracting(WorkflowRunRecord::id).containsExactly(handle.runId());
+        assertThat(runtime.getRunEvents(handle.runId()))
+                .extracting(RuntimeEventRecord::type)
+                .containsExactly(RuntimeEventType.WORKFLOW_STARTED.type(), RuntimeEventType.WORKFLOW_SUCCEEDED.type());
+    }
+
+    @Test
+    void unknownWorkflowRunInspectionReturnsEmptyResults() {
+        WorkflowRuntime runtime = WorkflowRuntime.builder().build();
+
+        assertThat(runtime.getRun("missing")).isEmpty();
+        assertThat(runtime.getRunEvents("missing")).isEmpty();
+        assertThat(runtime.listRuns()).isEmpty();
     }
 
     @Test
@@ -55,11 +74,12 @@ final class WorkflowRuntimeTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Workflow failed");
 
-        WorkflowRunRecord run = store.workflowRuns().stream()
-                .filter(record -> record.status().equals("FAILED"))
+        WorkflowRunRecord run = runtime.listRuns().stream()
+                .filter(record -> record.status() == WorkflowRunStatus.FAILED)
                 .findFirst()
                 .orElseThrow();
-        assertThat(run.status()).isEqualTo("FAILED");
+        assertThat(runtime.getRun(run.id())).isPresent();
+        assertThat(run.status()).isEqualTo(WorkflowRunStatus.FAILED);
         assertThat(run.error().keySet()).containsExactlyInAnyOrder("code", "details", "exception", "message");
         assertThat(run.error()).containsEntry("code", "SESSION_BUSY");
         assertThat(run.error()).containsEntry("exception", SessionBusyException.class.getName());
@@ -78,8 +98,8 @@ final class WorkflowRuntimeTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Workflow failed");
 
-        WorkflowRunRecord run = store.workflowRuns().stream()
-                .filter(record -> record.status().equals("FAILED"))
+        WorkflowRunRecord run = runtime.listRuns().stream()
+                .filter(record -> record.status() == WorkflowRunStatus.FAILED)
                 .findFirst()
                 .orElseThrow();
         assertThat(run.error().keySet()).containsExactlyInAnyOrder("code", "details", "exception", "message");
@@ -93,14 +113,15 @@ final class WorkflowRuntimeTest {
                                 "environment", Map.of("PASSWORD", "[REDACTED]"),
                                 "safe", "value"));
 
-        assertThat(store.eventsForWorkflowRun(run.id()))
+        var events = runtime.getRunEvents(run.id());
+        assertThat(events)
                 .extracting(RuntimeEventRecord::type)
-                .containsExactly("workflow.started", "workflow.failed");
-        assertThat(store.eventsForWorkflowRun(run.id()).stream()
-                        .filter(event -> event.type().equals("workflow.failed"))
-                        .findFirst()
-                        .orElseThrow()
-                        .payload())
+                .containsExactly(RuntimeEventType.WORKFLOW_STARTED.type(), RuntimeEventType.WORKFLOW_FAILED.type());
+        var failedEvent = events.stream()
+                .filter(event -> event.type().equals(RuntimeEventType.WORKFLOW_FAILED.type()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(failedEvent.payload())
                 .containsEntry("code", "SESSION_BUSY")
                 .containsEntry("exception", SessionBusyException.class.getName())
                 .containsEntry("message", "config boom")
@@ -110,12 +131,7 @@ final class WorkflowRuntimeTest {
                                 "headers", Map.of("Authorization", "[REDACTED]"),
                                 "environment", Map.of("PASSWORD", "[REDACTED]"),
                                 "safe", "value"));
-        assertThat(store.eventsForWorkflowRun(run.id()).stream()
-                        .filter(event -> event.type().equals("workflow.failed"))
-                        .findFirst()
-                        .orElseThrow()
-                        .payload())
-                .doesNotContainKey("developerDetails");
+        assertThat(failedEvent.payload()).doesNotContainKey("developerDetails");
     }
 
     private static final class Agent implements AgentDefinition {

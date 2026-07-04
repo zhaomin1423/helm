@@ -13,9 +13,13 @@ public interface RuntimeStore {
 
     Optional<OperationRecord> loadOperation(String operationId);
 
+    List<OperationRecord> listOperations();
+
     void saveWorkflowRun(WorkflowRunRecord run);
 
     Optional<WorkflowRunRecord> loadWorkflowRun(String runId);
+
+    List<WorkflowRunRecord> listWorkflowRuns();
 
     void appendEvent(RuntimeEventRecord event);
 

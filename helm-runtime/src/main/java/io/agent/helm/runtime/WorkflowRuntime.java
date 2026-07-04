@@ -3,9 +3,11 @@ package io.agent.helm.runtime;
 import io.agent.helm.core.agent.AgentHarnessApi;
 import io.agent.helm.core.error.WorkflowNotFoundException;
 import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.event.RuntimeEventType;
 import io.agent.helm.core.model.ModelProvider;
 import io.agent.helm.core.store.RuntimeStore;
 import io.agent.helm.core.store.WorkflowRunRecord;
+import io.agent.helm.core.store.WorkflowRunStatus;
 import io.agent.helm.core.workflow.WorkflowConfig;
 import io.agent.helm.core.workflow.WorkflowContext;
 import io.agent.helm.core.workflow.WorkflowDefinition;
@@ -15,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 public final class WorkflowRuntime {
@@ -50,10 +53,14 @@ public final class WorkflowRuntime {
         String runId = "run_" + UUID.randomUUID();
         Instant now = Instant.now();
         store.saveWorkflowRun(new WorkflowRunRecord(
-                runId, request.workflowName(), "RUNNING", request.input(), null, Map.of(), now, null));
+                runId, request.workflowName(), WorkflowRunStatus.RUNNING, request.input(), null, Map.of(), now, null));
 
         try {
-            appendEvent(runId, 1, "workflow.started", Map.of("workflow", String.valueOf(request.workflowName())));
+            appendEvent(
+                    runId,
+                    1,
+                    RuntimeEventType.WORKFLOW_STARTED,
+                    Map.of("workflow", String.valueOf(request.workflowName())));
             WorkflowConfig config = workflow.config();
             AgentRuntime.Builder agentBuilder =
                     AgentRuntime.builder().agent(config.agent()).store(store);
@@ -75,33 +82,66 @@ public final class WorkflowRuntime {
             });
 
             store.saveWorkflowRun(new WorkflowRunRecord(
-                    runId, request.workflowName(), "SUCCEEDED", request.input(), result, Map.of(), now, Instant.now()));
-            appendEvent(runId, 2, "workflow.succeeded", Map.of("workflow", String.valueOf(request.workflowName())));
+                    runId,
+                    request.workflowName(),
+                    WorkflowRunStatus.SUCCEEDED,
+                    request.input(),
+                    result,
+                    Map.of(),
+                    now,
+                    Instant.now()));
+            appendEventSafely(
+                    runId,
+                    2,
+                    RuntimeEventType.WORKFLOW_SUCCEEDED,
+                    Map.of("workflow", String.valueOf(request.workflowName())));
             return new WorkflowRunHandle<>(runId, result);
         } catch (Exception e) {
+            Map<String, Object> error = RuntimeErrorMapper.workflowError(e);
             store.saveWorkflowRun(new WorkflowRunRecord(
                     runId,
                     request.workflowName(),
-                    "FAILED",
+                    WorkflowRunStatus.FAILED,
                     request.input(),
                     null,
-                    RuntimeErrorMapper.workflowError(e),
+                    error,
                     now,
                     Instant.now()));
-            appendEvent(runId, 2, "workflow.failed", RuntimeErrorMapper.workflowError(e));
+            appendEventSafely(runId, 2, RuntimeEventType.WORKFLOW_FAILED, error);
             throw new IllegalStateException("Workflow failed", e);
         }
     }
 
-    private void appendEvent(String workflowRunId, long sequence, String type, Map<String, Object> payload) {
+    public Optional<WorkflowRunRecord> getRun(String runId) {
+        return store.loadWorkflowRun(runId);
+    }
+
+    public List<WorkflowRunRecord> listRuns() {
+        return store.listWorkflowRuns();
+    }
+
+    public List<RuntimeEventRecord> getRunEvents(String runId) {
+        return store.eventsForWorkflowRun(runId);
+    }
+
+    private void appendEvent(String workflowRunId, long sequence, RuntimeEventType type, Map<String, Object> payload) {
         store.appendEvent(new RuntimeEventRecord(
                 "evt_" + UUID.randomUUID(),
                 null,
                 workflowRunId,
                 sequence,
-                type,
+                type.type(),
                 EventRedactor.redact(payload),
                 Instant.now()));
+    }
+
+    private void appendEventSafely(
+            String workflowRunId, long sequence, RuntimeEventType type, Map<String, Object> payload) {
+        try {
+            appendEvent(workflowRunId, sequence, type, payload);
+        } catch (RuntimeException ignored) {
+            // Event persistence must not change the workflow outcome.
+        }
     }
 
     public static final class Builder {

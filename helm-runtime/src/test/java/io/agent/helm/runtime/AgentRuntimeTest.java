@@ -10,9 +10,12 @@ import io.agent.helm.core.agent.PromptResult;
 import io.agent.helm.core.error.ProviderNotFoundException;
 import io.agent.helm.core.error.SessionBusyException;
 import io.agent.helm.core.error.ToolExecutionException;
+import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.event.RuntimeEventType;
 import io.agent.helm.core.model.ModelStreamEvent;
 import io.agent.helm.core.model.TokenUsage;
 import io.agent.helm.core.store.OperationRecord;
+import io.agent.helm.core.store.OperationStatus;
 import io.agent.helm.core.tool.Tool;
 import io.agent.helm.core.tool.ToolContext;
 import io.agent.helm.core.type.TypeDescriptor;
@@ -40,7 +43,15 @@ final class AgentRuntimeTest {
 
         assertThat(result.text()).isEqualTo("hello");
         assertThat(store.loadSession("assistant:instance-1:default")).isPresent();
-        assertThat(store.loadOperation(result.operationId())).isPresent();
+        assertThat(runtime.getOperation(result.operationId()))
+                .isPresent()
+                .get()
+                .extracting(OperationRecord::status, OperationRecord::output)
+                .containsExactly(OperationStatus.SUCCEEDED, "hello");
+        assertThat(runtime.getOperationEvents(result.operationId()))
+                .extracting(RuntimeEventRecord::type)
+                .containsExactly(
+                        RuntimeEventType.OPERATION_STARTED.type(), RuntimeEventType.OPERATION_SUCCEEDED.type());
     }
 
     @Test
@@ -87,6 +98,58 @@ final class AgentRuntimeTest {
     }
 
     @Test
+    void dispatchReturnsHandleAndLeavesInspectableOperation() {
+        FakeProvider provider = new FakeProvider("fake");
+        provider.enqueue(
+                new ModelStreamEvent.ContentDelta("hello"), new ModelStreamEvent.Completed(new TokenUsage(1, 1)));
+        AgentRuntime runtime = AgentRuntime.builder()
+                .agent(new AssistantAgent())
+                .provider(provider)
+                .store(new InMemoryRuntimeStore())
+                .build();
+
+        OperationHandle handle = runtime.dispatch(new AgentPromptRequest("assistant", "instance-1", "default", "Hi"));
+
+        assertThat(handle.status()).isEqualTo(OperationStatus.SUCCEEDED);
+        assertThat(runtime.getOperation(handle.operationId()))
+                .isPresent()
+                .get()
+                .extracting(OperationRecord::status, OperationRecord::output)
+                .containsExactly(OperationStatus.SUCCEEDED, "hello");
+        assertThat(runtime.getOperationEvents(handle.operationId()))
+                .extracting(RuntimeEventRecord::type)
+                .containsExactly(
+                        RuntimeEventType.OPERATION_STARTED.type(), RuntimeEventType.OPERATION_SUCCEEDED.type());
+    }
+
+    @Test
+    void dispatchReturnsFailedHandleAndLeavesInspectableOperation() {
+        InMemoryRuntimeStore store = new InMemoryRuntimeStore();
+        AgentRuntime runtime =
+                AgentRuntime.builder().agent(new AssistantAgent()).store(store).build();
+
+        OperationHandle handle = runtime.dispatch(new AgentPromptRequest("assistant", "instance-1", "default", "Hi"));
+
+        assertThat(handle.status()).isEqualTo(OperationStatus.FAILED);
+        assertThat(runtime.getOperation(handle.operationId()))
+                .isPresent()
+                .get()
+                .extracting(OperationRecord::status)
+                .isEqualTo(OperationStatus.FAILED);
+        assertThat(runtime.getOperationEvents(handle.operationId()))
+                .extracting(RuntimeEventRecord::type)
+                .containsExactly(RuntimeEventType.OPERATION_STARTED.type(), RuntimeEventType.OPERATION_FAILED.type());
+    }
+
+    @Test
+    void unknownOperationInspectionReturnsEmptyResults() {
+        AgentRuntime runtime = AgentRuntime.builder().build();
+
+        assertThat(runtime.getOperation("missing")).isEmpty();
+        assertThat(runtime.getOperationEvents("missing")).isEmpty();
+    }
+
+    @Test
     void releasesActiveSessionAfterFailedToolPromptAndAllowsRetry() {
         FakeProvider provider = new FakeProvider("fake");
         provider.enqueue(
@@ -118,8 +181,8 @@ final class AgentRuntimeTest {
         assertThatThrownBy(() -> runtime.prompt(new AgentPromptRequest("assistant", "instance-1", "default", "Hi")))
                 .isInstanceOf(ProviderNotFoundException.class);
 
-        OperationRecord operation = store.operations().getFirst();
-        assertThat(operation.status()).isEqualTo("FAILED");
+        OperationRecord operation = store.listOperations().getFirst();
+        assertThat(operation.status()).isEqualTo(OperationStatus.FAILED);
         assertThat(operation.error().keySet()).containsExactlyInAnyOrder("code", "details", "exception", "message");
         assertThat(operation.error()).containsEntry("code", "PROVIDER_NOT_FOUND");
         assertThat(operation.error()).containsEntry("exception", ProviderNotFoundException.class.getName());

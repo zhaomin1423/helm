@@ -40,6 +40,17 @@ public final class InMemoryRuntimeStore implements RuntimeStore {
     }
 
     @Override
+    public List<OperationRecord> listOperations() {
+        return operations.values().stream()
+                .sorted(Comparator.comparing(OperationRecord::createdAt))
+                .toList();
+    }
+
+    List<OperationRecord> operations() {
+        return listOperations();
+    }
+
+    @Override
     public void saveWorkflowRun(WorkflowRunRecord run) {
         workflowRuns.put(run.id(), run);
     }
@@ -49,16 +60,15 @@ public final class InMemoryRuntimeStore implements RuntimeStore {
         return Optional.ofNullable(workflowRuns.get(runId));
     }
 
-    List<OperationRecord> operations() {
-        return operations.values().stream()
-                .sorted(Comparator.comparing(OperationRecord::createdAt))
+    @Override
+    public List<WorkflowRunRecord> listWorkflowRuns() {
+        return workflowRuns.values().stream()
+                .sorted(Comparator.comparing(WorkflowRunRecord::createdAt))
                 .toList();
     }
 
     List<WorkflowRunRecord> workflowRuns() {
-        return workflowRuns.values().stream()
-                .sorted(Comparator.comparing(WorkflowRunRecord::createdAt))
-                .toList();
+        return listWorkflowRuns();
     }
 
     @Override

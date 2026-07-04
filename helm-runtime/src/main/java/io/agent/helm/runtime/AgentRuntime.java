@@ -8,10 +8,12 @@ import io.agent.helm.core.error.AgentNotFoundException;
 import io.agent.helm.core.error.SessionBusyException;
 import io.agent.helm.core.error.ToolExecutionException;
 import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.event.RuntimeEventType;
 import io.agent.helm.core.message.HelmMessage;
 import io.agent.helm.core.model.ModelProvider;
 import io.agent.helm.core.store.AgentSessionState;
 import io.agent.helm.core.store.OperationRecord;
+import io.agent.helm.core.store.OperationStatus;
 import io.agent.helm.core.store.RuntimeStore;
 import io.agent.helm.core.tool.Tool;
 import io.agent.helm.core.tool.ToolContext;
@@ -26,6 +28,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -59,17 +62,56 @@ public final class AgentRuntime {
     }
 
     public PromptResult prompt(AgentPromptRequest request) {
+        String operationId = "op_" + UUID.randomUUID();
+        PromptExecution execution = executePrompt(request, operationId);
+        return new PromptResult(execution.operationId(), execution.text());
+    }
+
+    public OperationHandle dispatch(AgentPromptRequest request) {
+        String operationId = "op_" + UUID.randomUUID();
+        try {
+            executePrompt(request, operationId);
+        } catch (RuntimeException e) {
+            OperationStatus status = store.loadOperation(operationId)
+                    .map(OperationRecord::status)
+                    .orElse(OperationStatus.FAILED);
+            return new OperationHandle(operationId, status);
+        }
+        return new OperationHandle(operationId, OperationStatus.SUCCEEDED);
+    }
+
+    public Optional<OperationRecord> getOperation(String operationId) {
+        return store.loadOperation(operationId);
+    }
+
+    public List<RuntimeEventRecord> getOperationEvents(String operationId) {
+        return store.eventsForOperation(operationId);
+    }
+
+    private PromptExecution executePrompt(AgentPromptRequest request, String operationId) {
         String sessionId = sessionId(request.agentName(), request.instanceId(), request.sessionName());
         if (activeSessions.putIfAbsent(sessionId, Boolean.TRUE) != null) {
             throw new SessionBusyException("Session is busy", Map.of("sessionId", sessionId), Map.of());
         }
-        String operationId = "op_" + UUID.randomUUID();
         Instant now = Instant.now();
 
         try {
             store.saveOperation(new OperationRecord(
-                    operationId, sessionId, "PROMPT", "RUNNING", request.text(), null, Map.of(), now, null));
-            appendEvent(operationId, null, 1, "operation.started", Map.of("text", String.valueOf(request.text())));
+                    operationId,
+                    sessionId,
+                    "PROMPT",
+                    OperationStatus.RUNNING,
+                    request.text(),
+                    null,
+                    Map.of(),
+                    now,
+                    null));
+            appendEvent(
+                    operationId,
+                    null,
+                    1,
+                    RuntimeEventType.OPERATION_STARTED,
+                    Map.of("text", String.valueOf(request.text())));
 
             AgentDefinition agent = agent(request.agentName());
             AgentConfig config = agent.configure(new AgentContext(request.agentName(), request.instanceId()));
@@ -122,26 +164,32 @@ public final class AgentRuntime {
                     operationId,
                     sessionId,
                     "PROMPT",
-                    "SUCCEEDED",
+                    OperationStatus.SUCCEEDED,
                     request.text(),
                     result.text(),
                     Map.of(),
                     now,
                     Instant.now()));
-            appendEvent(operationId, null, 2, "operation.succeeded", Map.of("text", String.valueOf(result.text())));
-            return new PromptResult(operationId, result.text());
+            appendEventSafely(
+                    operationId,
+                    null,
+                    2,
+                    RuntimeEventType.OPERATION_SUCCEEDED,
+                    Map.of("text", String.valueOf(result.text())));
+            return new PromptExecution(operationId, result.text());
         } catch (RuntimeException e) {
+            Map<String, Object> error = RuntimeErrorMapper.operationError(e);
             store.saveOperation(new OperationRecord(
                     operationId,
                     sessionId,
                     "PROMPT",
-                    "FAILED",
+                    OperationStatus.FAILED,
                     request.text(),
                     null,
-                    RuntimeErrorMapper.operationError(e),
+                    error,
                     now,
                     Instant.now()));
-            appendEvent(operationId, null, 2, "operation.failed", RuntimeErrorMapper.operationError(e));
+            appendEventSafely(operationId, null, 2, RuntimeEventType.OPERATION_FAILED, error);
             throw e;
         } finally {
             activeSessions.remove(sessionId);
@@ -191,15 +239,32 @@ public final class AgentRuntime {
     }
 
     private void appendEvent(
-            String operationId, String workflowRunId, long sequence, String type, Map<String, Object> payload) {
+            String operationId,
+            String workflowRunId,
+            long sequence,
+            RuntimeEventType type,
+            Map<String, Object> payload) {
         store.appendEvent(new RuntimeEventRecord(
                 "evt_" + UUID.randomUUID(),
                 operationId,
                 workflowRunId,
                 sequence,
-                type,
+                type.type(),
                 EventRedactor.redact(payload),
                 Instant.now()));
+    }
+
+    private void appendEventSafely(
+            String operationId,
+            String workflowRunId,
+            long sequence,
+            RuntimeEventType type,
+            Map<String, Object> payload) {
+        try {
+            appendEvent(operationId, workflowRunId, sequence, type, payload);
+        } catch (RuntimeException ignored) {
+            // Event persistence must not change the operation outcome.
+        }
     }
 
     private static String sessionId(String agentName, String instanceId, String sessionName) {
@@ -209,6 +274,8 @@ public final class AgentRuntime {
     private static String messageOf(Throwable throwable) {
         return String.valueOf(throwable.getMessage());
     }
+
+    private record PromptExecution(String operationId, String text) {}
 
     public static final class Builder {
         private final List<AgentDefinition> agents = new ArrayList<>();
