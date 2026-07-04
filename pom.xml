@@ -15,6 +15,7 @@
     <module>helm-agent-engine</module>
     <module>helm-runtime</module>
     <module>helm-sandbox-local</module>
+    <module>helm-provider-openai</module>
     <module>examples/coding-workflow</module>
   </modules>
 
