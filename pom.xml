@@ -109,6 +109,8 @@
             <excludes>
               <exclude>target/**</exclude>
               <exclude>**/target/**</exclude>
+              <exclude>.claude/**</exclude>
+              <exclude>**/.claude/**</exclude>
             </excludes>
             <trimTrailingWhitespace/>
             <endWithNewline/>
