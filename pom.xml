@@ -20,7 +20,9 @@
     <module>helm-http-core</module>
     <module>helm-http-servlet</module>
     <module>helm-cli</module>
+    <module>helm-spring-boot-starter</module>
     <module>examples/coding-workflow</module>
+    <module>examples/spring-boot-example</module>
   </modules>
 
   <properties>
@@ -35,6 +37,7 @@
     <picocli.version>4.7.6</picocli.version>
     <jetty.version>12.0.13</jetty.version>
     <jakarta.servlet.version>6.0.0</jakarta.servlet.version>
+    <spring-boot.version>3.4.13</spring-boot.version>
   </properties>
 
   <dependencyManagement>

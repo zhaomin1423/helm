@@ -426,8 +426,8 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 
 ### 当前活跃 Milestone
 
-- Active: _none_（系统设计 Milestone 3 HTTP/CLI 已完成）
-- Recommended next: 系统设计 Milestone 4 Spring Boot Starter（见 `docs/helm-system-design-milestones.md`）
+- Active: _none_（系统设计 Milestone 4 Spring Boot Starter 已完成）
+- Recommended next: 系统设计 Milestone 5 JDBC 持久化与可观测性（见 `docs/helm-system-design-milestones.md`）
 
 ### 当前阻塞项
 
@@ -452,6 +452,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 
 | Date | Update |
 | --- | --- |
+| 2026-07-04 | 完成系统设计 Milestone 4：新增 `helm-spring-boot-starter`（`HelmAutoConfiguration` 自动发现 Agent/Workflow/Provider/RuntimeStore Bean，`helm.http.enabled` 挂载 HTTP 路由，名称冲突 fail-fast）与 `examples/spring-boot-example`；Spring Boot BOM 限定在 starter/example 模块，core/http/cli 零 Spring 依赖。`mvn verify` 全绿（141 测试）。 |
 | 2026-07-04 | 完成系统设计 Milestone 3：新增 `helm-http-core`、`helm-http-servlet`、`helm-cli`；框架无关 HTTP DTO/路由/错误映射，`HelmHttpServlet` 适配 Jakarta Servlet，Picocli `helm run`/`dev`/`operations`/`runs`/`run-detail`。`HttpErrorContractTest` 在 router 与 servlet（Jetty）上均通过；CLI 端到端测试通过；`mvn verify` 全绿（132 测试），`helm-http-core` 不依赖 Servlet。 |
 | 2026-07-04 | 完成系统设计 Milestone 2：新增 `helm-provider-openai`、`helm-provider-anthropic`、`helm-sandbox-local`；`helm-core` 发布 test-jar 提供 `ModelProviderContractTest`/`SandboxContractTest` 契约基类；`helm-runtime` 增加 `ClasspathSkillLoader`。FakeProvider/InMemorySandbox/LocalSandbox 及两个真实 provider 均通过契约测试；切换验证通过；`mvn verify` 全绿（107 测试），core 三模块无新增生产依赖。 |
 | 2026-06-29 | 完成 M0/M1 first slice：`AgentConfig` validation、operation/workflow status enum、runtime inspection API、event taxonomy、`OperationHandle`/`dispatch`、`docs/contracts/runtime-store.md`。 |
@@ -461,6 +462,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 
 | Date | Command | Result |
 | --- | --- | --- |
+| 2026-07-04 | `JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH mvn -f /Users/zhaomin/Files/projects/helm/pom.xml verify` | BUILD SUCCESS；141 tests；Spotless passed（M4 后） |
 | 2026-07-04 | `JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH mvn -f /Users/zhaomin/Files/projects/helm/pom.xml verify` | BUILD SUCCESS；132 tests；Spotless passed（M3 后） |
 | 2026-07-04 | `JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH mvn -f /Users/zhaomin/Files/projects/helm/pom.xml verify` | BUILD SUCCESS；107 tests；Spotless passed（M2） |
 | 2026-06-29 | `JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH mvn -f /Users/zhaomin/Files/projects/helm/pom.xml verify` | BUILD SUCCESS；47 tests；Spotless passed |
