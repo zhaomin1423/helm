@@ -14,6 +14,7 @@
     <module>helm-core</module>
     <module>helm-agent-engine</module>
     <module>helm-runtime</module>
+    <module>helm-sandbox-local</module>
     <module>examples/coding-workflow</module>
   </modules>
 
