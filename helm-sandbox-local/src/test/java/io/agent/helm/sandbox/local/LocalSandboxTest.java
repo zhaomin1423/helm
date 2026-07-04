@@ -67,6 +67,18 @@ final class LocalSandboxTest {
         assertThatThrownBy(() -> sandbox.fs().readText("link/secret.txt")).isInstanceOf(SandboxException.class);
     }
 
+    @Test
+    void rejectsWriteThroughSymlinkToNonexistentTarget(@TempDir Path tempDir) throws Exception {
+        LocalSandbox sandbox = LocalSandbox.builder().root(tempDir).build();
+        Path nonExistentOutside = tempDir.getParent().resolve("helm-nonexistent-target");
+        Files.deleteIfExists(nonExistentOutside);
+        Files.createSymbolicLink(tempDir.resolve("link"), nonExistentOutside);
+
+        assertThatThrownBy(() -> sandbox.fs().writeText("link/payload", "PWNED"))
+                .isInstanceOf(SandboxException.class);
+        assertThat(Files.exists(nonExistentOutside)).isFalse();
+    }
+
     private static SandboxCommand command(List<String> argv) {
         return new SandboxCommand(argv, Duration.ofSeconds(5), Map.of());
     }

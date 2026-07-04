@@ -40,10 +40,12 @@ final class LocalShell implements SandboxShell {
         }
         ProcessBuilder builder = new ProcessBuilder(argv).directory(root.toFile());
         Map<String, String> env = builder.environment();
-        env.putAll(command.environment());
+        // The allowlist filters only the inherited environment; the command's explicit environment
+        // is always applied on top. An empty allowlist means no filtering (inherit everything).
         if (!envAllowlist.isEmpty()) {
             env.keySet().retainAll(envAllowlist);
         }
+        env.putAll(command.environment());
 
         Process process;
         try {

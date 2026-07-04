@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.agent.helm.core.error.HelmException;
 import io.agent.helm.core.error.ProviderException;
 import io.agent.helm.core.message.ContentBlock;
 import io.agent.helm.core.message.HelmMessage;
@@ -80,9 +81,13 @@ public final class AnthropicProvider implements ModelProvider {
 
     @Override
     public Flow.Publisher<ModelStreamEvent> stream(ModelRequest request) {
-        SubmissionPublisher<ModelStreamEvent> publisher = new SubmissionPublisher<>();
-        Thread.startVirtualThread(() -> streamAsync(request, publisher));
-        return publisher;
+        // Defer starting the producer until a subscriber is registered, so no items are submitted
+        // (and dropped) before onSubscribe.
+        return subscriber -> {
+            SubmissionPublisher<ModelStreamEvent> publisher = new SubmissionPublisher<>();
+            publisher.subscribe(subscriber);
+            Thread.startVirtualThread(() -> streamAsync(request, publisher));
+        };
     }
 
     private void streamAsync(ModelRequest request, SubmissionPublisher<ModelStreamEvent> publisher) {
@@ -90,12 +95,13 @@ public final class AnthropicProvider implements ModelProvider {
             HttpRequest httpRequest = buildRequest(request);
             HttpResponse<InputStream> response = httpClient.send(httpRequest, BodyHandlers.ofInputStream());
             int status = response.statusCode();
-            if (status >= 400) {
-                String body = readAll(response.body());
-                publisher.closeExceptionally(mapHttpError(status, body));
-                return;
+            try (InputStream body = response.body()) {
+                if (status >= 400) {
+                    publisher.closeExceptionally(mapHttpError(status, readAll(body)));
+                    return;
+                }
+                parseSse(body, publisher);
             }
-            parseSse(response.body(), publisher);
         } catch (HttpTimeoutException e) {
             publisher.closeExceptionally(new ProviderException(
                     ProviderException.TIMEOUT, "request timed out", Map.of("provider", providerId), Map.of()));
@@ -104,11 +110,18 @@ public final class AnthropicProvider implements ModelProvider {
                     "anthropic request failed",
                     Map.of("provider", providerId),
                     Map.of("message", String.valueOf(e.getMessage()))));
-        } catch (Exception e) {
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             publisher.closeExceptionally(
-                    e instanceof RuntimeException re
-                            ? re
-                            : new ProviderException("unexpected error", Map.of("provider", providerId), Map.of()));
+                    new ProviderException("request interrupted", Map.of("provider", providerId), Map.of()));
+        } catch (RuntimeException e) {
+            publisher.closeExceptionally(
+                    e instanceof HelmException he
+                            ? he
+                            : new ProviderException(
+                                    "unexpected error",
+                                    Map.of("provider", providerId),
+                                    Map.of("message", String.valueOf(e.getMessage()))));
         }
     }
 
@@ -116,60 +129,63 @@ public final class AnthropicProvider implements ModelProvider {
         Map<Integer, ToolCallAccumulator> tools = new LinkedHashMap<>();
         long inputTokens = 0;
         long outputTokens = 0;
-        BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8));
-        String line;
-        while ((line = reader.readLine()) != null) {
-            if (!line.startsWith("data:")) {
-                continue;
-            }
-            String data = line.substring(5).strip();
-            if (data.isEmpty()) {
-                continue;
-            }
-            JsonNode node = OBJECT_MAPPER.readTree(data);
-            String type = node.path("type").asText("");
-            switch (type) {
-                case "message_start" -> inputTokens =
-                        node.path("message").path("usage").path("input_tokens").asLong(0);
-                case "content_block_start" -> {
-                    JsonNode block = node.path("content_block");
-                    if ("tool_use".equals(block.path("type").asText())) {
-                        int index = node.path("index").asInt(0);
-                        ToolCallAccumulator acc = new ToolCallAccumulator();
-                        acc.id = block.path("id").asText("");
-                        acc.name = block.path("name").asText("");
-                        tools.put(index, acc);
-                    }
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.startsWith("data:")) {
+                    continue;
                 }
-                case "content_block_delta" -> {
-                    int index = node.path("index").asInt(0);
-                    JsonNode delta = node.path("delta");
-                    String deltaType = delta.path("type").asText("");
-                    if ("text_delta".equals(deltaType)) {
-                        publisher.submit(new ModelStreamEvent.ContentDelta(
-                                delta.path("text").asText("")));
-                    } else if ("input_json_delta".equals(deltaType)) {
-                        ToolCallAccumulator acc = tools.get(index);
-                        if (acc != null) {
-                            acc.arguments.append(delta.path("partial_json").asText(""));
+                String data = line.substring(5).strip();
+                if (data.isEmpty()) {
+                    continue;
+                }
+                JsonNode node = OBJECT_MAPPER.readTree(data);
+                String type = node.path("type").asText("");
+                switch (type) {
+                    case "message_start" -> inputTokens = node.path("message")
+                            .path("usage")
+                            .path("input_tokens")
+                            .asLong(0);
+                    case "content_block_start" -> {
+                        JsonNode block = node.path("content_block");
+                        if ("tool_use".equals(block.path("type").asText())) {
+                            int index = node.path("index").asInt(0);
+                            ToolCallAccumulator acc = new ToolCallAccumulator();
+                            acc.id = block.path("id").asText("");
+                            acc.name = block.path("name").asText("");
+                            tools.put(index, acc);
                         }
                     }
-                }
-                case "content_block_stop" -> {
-                    int index = node.path("index").asInt(0);
-                    ToolCallAccumulator acc = tools.remove(index);
-                    if (acc != null) {
-                        publisher.submit(new ModelStreamEvent.ToolCallRequested(
-                                acc.id, acc.name, parseArguments(acc.arguments.toString())));
+                    case "content_block_delta" -> {
+                        int index = node.path("index").asInt(0);
+                        JsonNode delta = node.path("delta");
+                        String deltaType = delta.path("type").asText("");
+                        if ("text_delta".equals(deltaType)) {
+                            publisher.submit(new ModelStreamEvent.ContentDelta(
+                                    delta.path("text").asText("")));
+                        } else if ("input_json_delta".equals(deltaType)) {
+                            ToolCallAccumulator acc = tools.get(index);
+                            if (acc != null) {
+                                acc.arguments.append(delta.path("partial_json").asText(""));
+                            }
+                        }
                     }
-                }
-                case "message_delta" -> outputTokens =
-                        node.path("usage").path("output_tokens").asLong(outputTokens);
-                case "message_stop" -> {
-                    // Terminal event; completion is emitted after the loop.
-                }
-                default -> {
-                    // Ignore unknown event types.
+                    case "content_block_stop" -> {
+                        int index = node.path("index").asInt(0);
+                        ToolCallAccumulator acc = tools.remove(index);
+                        if (acc != null) {
+                            publisher.submit(new ModelStreamEvent.ToolCallRequested(
+                                    acc.id, acc.name, parseArguments(acc.arguments.toString())));
+                        }
+                    }
+                    case "message_delta" -> outputTokens =
+                            node.path("usage").path("output_tokens").asLong(outputTokens);
+                    case "message_stop" -> {
+                        // Terminal event; completion is emitted after the loop.
+                    }
+                    default -> {
+                        // Ignore unknown event types.
+                    }
                 }
             }
         }

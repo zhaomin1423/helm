@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.agent.helm.core.error.HelmException;
 import io.agent.helm.core.error.ProviderException;
 import io.agent.helm.core.message.ContentBlock;
 import io.agent.helm.core.message.HelmMessage;
@@ -71,9 +72,13 @@ public final class OpenAiProvider implements ModelProvider {
 
     @Override
     public Flow.Publisher<ModelStreamEvent> stream(ModelRequest request) {
-        SubmissionPublisher<ModelStreamEvent> publisher = new SubmissionPublisher<>();
-        Thread.startVirtualThread(() -> streamAsync(request, publisher));
-        return publisher;
+        // Defer starting the producer until a subscriber is registered, so no items are submitted
+        // (and dropped) before onSubscribe.
+        return subscriber -> {
+            SubmissionPublisher<ModelStreamEvent> publisher = new SubmissionPublisher<>();
+            publisher.subscribe(subscriber);
+            Thread.startVirtualThread(() -> streamAsync(request, publisher));
+        };
     }
 
     private void streamAsync(ModelRequest request, SubmissionPublisher<ModelStreamEvent> publisher) {
@@ -81,12 +86,13 @@ public final class OpenAiProvider implements ModelProvider {
             HttpRequest httpRequest = buildRequest(request);
             HttpResponse<InputStream> response = httpClient.send(httpRequest, BodyHandlers.ofInputStream());
             int status = response.statusCode();
-            if (status >= 400) {
-                String body = readAll(response.body());
-                publisher.closeExceptionally(mapHttpError(status, body));
-                return;
+            try (InputStream body = response.body()) {
+                if (status >= 400) {
+                    publisher.closeExceptionally(mapHttpError(status, readAll(body)));
+                    return;
+                }
+                parseSse(body, publisher);
             }
-            parseSse(response.body(), publisher);
         } catch (HttpTimeoutException e) {
             publisher.closeExceptionally(new ProviderException(
                     ProviderException.TIMEOUT, "request timed out", Map.of("provider", providerId), Map.of()));
@@ -95,65 +101,73 @@ public final class OpenAiProvider implements ModelProvider {
                     "openai request failed",
                     Map.of("provider", providerId),
                     Map.of("message", String.valueOf(e.getMessage()))));
-        } catch (Exception e) {
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             publisher.closeExceptionally(
-                    e instanceof RuntimeException re
-                            ? re
-                            : new ProviderException("unexpected error", Map.of("provider", providerId), Map.of()));
+                    new ProviderException("request interrupted", Map.of("provider", providerId), Map.of()));
+        } catch (RuntimeException e) {
+            publisher.closeExceptionally(
+                    e instanceof HelmException he
+                            ? he
+                            : new ProviderException(
+                                    "unexpected error",
+                                    Map.of("provider", providerId),
+                                    Map.of("message", String.valueOf(e.getMessage()))));
         }
     }
 
     private void parseSse(InputStream body, SubmissionPublisher<ModelStreamEvent> publisher) throws IOException {
         Map<Integer, ToolCallAccumulator> toolCalls = new LinkedHashMap<>();
         TokenUsage usage = null;
-        BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8));
-        String line;
-        while ((line = reader.readLine()) != null) {
-            if (!line.startsWith("data:")) {
-                continue;
-            }
-            String data = line.substring(5).strip();
-            if (data.isEmpty() || data.equals("[DONE]")) {
-                continue;
-            }
-            JsonNode node = OBJECT_MAPPER.readTree(data);
-            JsonNode choices = node.path("choices");
-            JsonNode delta = choices.path(0).path("delta");
-            JsonNode content = delta.path("content");
-            if (content.isTextual() && !content.asText().isEmpty()) {
-                publisher.submit(new ModelStreamEvent.ContentDelta(content.asText()));
-            }
-            JsonNode toolCallDeltas = delta.path("tool_calls");
-            if (toolCallDeltas.isArray()) {
-                for (JsonNode tc : toolCallDeltas) {
-                    int index = tc.path("index").asInt(0);
-                    ToolCallAccumulator acc = toolCalls.computeIfAbsent(index, k -> new ToolCallAccumulator());
-                    JsonNode id = tc.path("id");
-                    if (!id.isMissingNode() && !id.asText().isEmpty()) {
-                        acc.id = id.asText();
-                    }
-                    JsonNode fn = tc.path("function");
-                    JsonNode name = fn.path("name");
-                    if (!name.isMissingNode() && !name.asText().isEmpty()) {
-                        acc.name = name.asText();
-                    }
-                    JsonNode args = fn.path("arguments");
-                    if (args.isTextual()) {
-                        acc.arguments.append(args.asText());
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.startsWith("data:")) {
+                    continue;
+                }
+                String data = line.substring(5).strip();
+                if (data.isEmpty() || data.equals("[DONE]")) {
+                    continue;
+                }
+                JsonNode node = OBJECT_MAPPER.readTree(data);
+                JsonNode choices = node.path("choices");
+                JsonNode delta = choices.path(0).path("delta");
+                JsonNode content = delta.path("content");
+                if (content.isTextual() && !content.asText().isEmpty()) {
+                    publisher.submit(new ModelStreamEvent.ContentDelta(content.asText()));
+                }
+                JsonNode toolCallDeltas = delta.path("tool_calls");
+                if (toolCallDeltas.isArray()) {
+                    for (JsonNode tc : toolCallDeltas) {
+                        int index = tc.path("index").asInt(0);
+                        ToolCallAccumulator acc = toolCalls.computeIfAbsent(index, k -> new ToolCallAccumulator());
+                        JsonNode id = tc.path("id");
+                        if (!id.isMissingNode() && !id.asText().isEmpty()) {
+                            acc.id = id.asText();
+                        }
+                        JsonNode fn = tc.path("function");
+                        JsonNode name = fn.path("name");
+                        if (!name.isMissingNode() && !name.asText().isEmpty()) {
+                            acc.name = name.asText();
+                        }
+                        JsonNode args = fn.path("arguments");
+                        if (args.isTextual()) {
+                            acc.arguments.append(args.asText());
+                        }
                     }
                 }
-            }
-            String finishReason = choices.path(0).path("finish_reason").asText(null);
-            if ("tool_calls".equals(finishReason)) {
-                for (ToolCallAccumulator acc : toolCalls.values()) {
-                    publisher.submit(new ModelStreamEvent.ToolCallRequested(
-                            acc.id, acc.name, parseArguments(acc.arguments.toString())));
+                String finishReason = choices.path(0).path("finish_reason").asText(null);
+                if ("tool_calls".equals(finishReason)) {
+                    for (ToolCallAccumulator acc : toolCalls.values()) {
+                        publisher.submit(new ModelStreamEvent.ToolCallRequested(
+                                acc.id, acc.name, parseArguments(acc.arguments.toString())));
+                    }
+                    toolCalls.clear();
                 }
-                toolCalls.clear();
-            }
-            JsonNode usageNode = node.path("usage");
-            if (!usageNode.isMissingNode()) {
-                usage = parseUsage(usageNode);
+                JsonNode usageNode = node.path("usage");
+                if (!usageNode.isMissingNode()) {
+                    usage = parseUsage(usageNode);
+                }
             }
         }
         for (ToolCallAccumulator acc : toolCalls.values()) {

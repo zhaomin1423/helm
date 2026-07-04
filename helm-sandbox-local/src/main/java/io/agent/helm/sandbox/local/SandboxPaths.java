@@ -22,9 +22,16 @@ final class SandboxPaths {
         if (!resolved.startsWith(root)) {
             throw new SandboxException("path escapes sandbox root", Map.of("path", relativePath), Map.of());
         }
-        Path realAncestor = realPathOfExistingAncestor(resolved);
-        if (!realAncestor.startsWith(realRoot)) {
-            throw new SandboxException("path escapes sandbox root via symlink", Map.of("path", relativePath), Map.of());
+        // Walk down from the real root, rejecting any symlink component. This catches links to
+        // non-existent targets (which the previous existing-ancestor check missed) as well as
+        // links to existing outside paths.
+        Path current = realRoot;
+        for (Path component : root.relativize(resolved)) {
+            current = current.resolve(component);
+            if (Files.isSymbolicLink(current)) {
+                throw new SandboxException(
+                        "symlinks are not permitted inside the sandbox", Map.of("path", relativePath), Map.of());
+            }
         }
         return resolved;
     }
@@ -34,21 +41,6 @@ final class SandboxPaths {
             return path.toRealPath();
         } catch (Exception e) {
             throw new SandboxException("cannot resolve sandbox root", Map.of("path", String.valueOf(path)), Map.of());
-        }
-    }
-
-    private static Path realPathOfExistingAncestor(Path path) {
-        Path existing = path;
-        while (existing != null && !Files.exists(existing)) {
-            existing = existing.getParent();
-        }
-        if (existing == null) {
-            return path;
-        }
-        try {
-            return existing.toRealPath();
-        } catch (Exception e) {
-            return existing;
         }
     }
 }
