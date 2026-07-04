@@ -18,6 +18,7 @@
     <module>helm-provider-openai</module>
     <module>helm-provider-anthropic</module>
     <module>helm-http-core</module>
+    <module>helm-http-servlet</module>
     <module>examples/coding-workflow</module>
   </modules>
 
@@ -64,7 +65,7 @@
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.ee10</groupId>
-        <artifactId>jetty-servlet</artifactId>
+        <artifactId>jetty-ee10-servlet</artifactId>
         <version>${jetty.version}</version>
       </dependency>
       <dependency>
