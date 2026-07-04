@@ -21,6 +21,8 @@
     <module>helm-http-servlet</module>
     <module>helm-cli</module>
     <module>helm-spring-boot-starter</module>
+    <module>helm-persistence-jdbc</module>
+    <module>helm-observability-logging</module>
     <module>examples/coding-workflow</module>
     <module>examples/spring-boot-example</module>
   </modules>
@@ -38,6 +40,9 @@
     <jetty.version>12.0.13</jetty.version>
     <jakarta.servlet.version>6.0.0</jakarta.servlet.version>
     <spring-boot.version>3.4.13</spring-boot.version>
+    <flyway.version>10.22.0</flyway.version>
+    <h2.version>2.3.232</h2.version>
+    <slf4j.version>2.0.16</slf4j.version>
   </properties>
 
   <dependencyManagement>
@@ -73,10 +78,26 @@
         <version>${jetty.version}</version>
       </dependency>
       <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-core</artifactId>
+        <version>${flyway.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
         <groupId>jakarta.servlet</groupId>
         <artifactId>jakarta.servlet-api</artifactId>
         <version>${jakarta.servlet.version}</version>
         <scope>provided</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.h2database</groupId>
+        <artifactId>h2</artifactId>
+        <version>${h2.version}</version>
+        <scope>test</scope>
       </dependency>
       <dependency>
         <groupId>org.assertj</groupId>
