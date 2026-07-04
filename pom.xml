@@ -16,6 +16,7 @@
     <module>helm-runtime</module>
     <module>helm-sandbox-local</module>
     <module>helm-provider-openai</module>
+    <module>helm-provider-anthropic</module>
     <module>examples/coding-workflow</module>
   </modules>
 
