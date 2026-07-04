@@ -89,6 +89,10 @@ public final class AgentRuntime {
         return store.eventsForOperation(operationId);
     }
 
+    public List<OperationRecord> listOperations() {
+        return store.listOperations();
+    }
+
     private PromptExecution executePrompt(AgentPromptRequest request, String operationId) {
         String sessionId = sessionId(request.agentName(), request.instanceId(), request.sessionName());
         if (activeSessions.putIfAbsent(sessionId, Boolean.TRUE) != null) {

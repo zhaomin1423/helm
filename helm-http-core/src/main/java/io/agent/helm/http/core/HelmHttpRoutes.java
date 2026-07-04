@@ -1,0 +1,160 @@
+package io.agent.helm.http.core;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agent.helm.core.agent.PromptResult;
+import io.agent.helm.core.error.ValidationException;
+import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.store.OperationRecord;
+import io.agent.helm.core.store.WorkflowRunRecord;
+import io.agent.helm.runtime.AgentPromptRequest;
+import io.agent.helm.runtime.AgentRuntime;
+import io.agent.helm.runtime.OperationHandle;
+import io.agent.helm.runtime.WorkflowInvokeRequest;
+import io.agent.helm.runtime.WorkflowRunHandle;
+import io.agent.helm.runtime.WorkflowRuntime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+
+/** Builds the standard Helm {@link HelmHttpRouter} from an {@link AgentRuntime} and {@link WorkflowRuntime}. */
+public final class HelmHttpRoutes {
+    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+
+    private HelmHttpRoutes() {}
+
+    public static HelmHttpRouter router(AgentRuntime agentRuntime, WorkflowRuntime workflowRuntime) {
+        Objects.requireNonNull(agentRuntime, "agentRuntime");
+        Objects.requireNonNull(workflowRuntime, "workflowRuntime");
+        return HelmHttpRouter.builder()
+                .route(
+                        "POST",
+                        "/agents/{agent}/instances/{instance}/sessions/{session}/prompt",
+                        promptHandler(agentRuntime))
+                .route("POST", "/agents/{agent}/dispatch", dispatchHandler(agentRuntime))
+                .route("POST", "/workflows/{workflow}/invoke", invokeHandler(workflowRuntime))
+                .route("GET", "/operations/{id}", getOperationHandler(agentRuntime))
+                .route("GET", "/operations/{id}/events", getOperationEventsHandler(agentRuntime))
+                .route("GET", "/sessions/{id}/operations", sessionOperationsHandler(agentRuntime))
+                .route("GET", "/workflow-runs/{id}", getRunHandler(workflowRuntime))
+                .route("GET", "/workflows/{workflow}/runs", workflowRunsHandler(workflowRuntime))
+                .build();
+    }
+
+    static HelmHttpHandler promptHandler(AgentRuntime runtime) {
+        return request -> {
+            String text = readField(request.body(), "text");
+            PromptResult result = runtime.prompt(new AgentPromptRequest(
+                    request.pathParam("agent"), request.pathParam("instance"), request.pathParam("session"), text));
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("operationId", result.operationId());
+            body.put("text", result.text());
+            return HelmHttpResponse.ok(toJson(body));
+        };
+    }
+
+    static HelmHttpHandler dispatchHandler(AgentRuntime runtime) {
+        return request -> {
+            JsonNode node = readObject(request.body());
+            String instance = node.path("instance").asText("");
+            String session = node.path("session").asText("");
+            String text = node.path("text").asText("");
+            OperationHandle handle =
+                    runtime.dispatch(new AgentPromptRequest(request.pathParam("agent"), instance, session, text));
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("operationId", handle.operationId());
+            body.put("status", handle.status().name());
+            return HelmHttpResponse.accepted(toJson(body));
+        };
+    }
+
+    static HelmHttpHandler invokeHandler(WorkflowRuntime runtime) {
+        return request -> {
+            JsonNode node = readObject(request.body());
+            Object input = node.path("input").isMissingNode() ? null : node.get("input");
+            @SuppressWarnings({"rawtypes", "unchecked"})
+            WorkflowRunHandle<?> handle =
+                    runtime.invoke(new WorkflowInvokeRequest(request.pathParam("workflow"), input));
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("runId", handle.runId());
+            body.put("result", handle.result());
+            return HelmHttpResponse.ok(toJson(body));
+        };
+    }
+
+    static HelmHttpHandler getOperationHandler(AgentRuntime runtime) {
+        return request -> {
+            Optional<OperationRecord> op = runtime.getOperation(request.pathParam("id"));
+            return op.isPresent()
+                    ? HelmHttpResponse.ok(toJson(op.get()))
+                    : HttpErrors.errorResponse(404, "NOT_FOUND", "operation not found", Map.of());
+        };
+    }
+
+    static HelmHttpHandler getOperationEventsHandler(AgentRuntime runtime) {
+        return request -> {
+            List<RuntimeEventRecord> events = runtime.getOperationEvents(request.pathParam("id"));
+            return HelmHttpResponse.ok(toJson(Map.of("events", events)));
+        };
+    }
+
+    static HelmHttpHandler sessionOperationsHandler(AgentRuntime runtime) {
+        return request -> {
+            String sessionId = request.pathParam("id");
+            List<OperationRecord> ops = runtime.listOperations().stream()
+                    .filter(op -> sessionId.equals(op.sessionId()))
+                    .toList();
+            return HelmHttpResponse.ok(toJson(Map.of("operations", ops)));
+        };
+    }
+
+    static HelmHttpHandler getRunHandler(WorkflowRuntime runtime) {
+        return request -> {
+            Optional<WorkflowRunRecord> run = runtime.getRun(request.pathParam("id"));
+            return run.isPresent()
+                    ? HelmHttpResponse.ok(toJson(run.get()))
+                    : HttpErrors.errorResponse(404, "NOT_FOUND", "workflow run not found", Map.of());
+        };
+    }
+
+    static HelmHttpHandler workflowRunsHandler(WorkflowRuntime runtime) {
+        return request -> {
+            String workflow = request.pathParam("workflow");
+            List<WorkflowRunRecord> runs = runtime.listRuns().stream()
+                    .filter(r -> workflow.equals(r.workflowName()))
+                    .toList();
+            return HelmHttpResponse.ok(toJson(Map.of("runs", runs)));
+        };
+    }
+
+    private static String readField(String body, String field) {
+        JsonNode node = readObject(body);
+        JsonNode value = node.path(field);
+        if (value.isMissingNode()) {
+            throw new ValidationException("missing field: " + field, Map.of("field", field), Map.of());
+        }
+        return value.asText();
+    }
+
+    private static JsonNode readObject(String body) {
+        try {
+            JsonNode node = MAPPER.readTree(body == null || body.isBlank() ? "{}" : body);
+            if (!node.isObject()) {
+                throw new ValidationException("request body must be a JSON object", Map.of(), Map.of());
+            }
+            return node;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new ValidationException("invalid JSON body", Map.of(), Map.of("message", e.getMessage()));
+        }
+    }
+
+    private static String toJson(Object value) {
+        try {
+            return MAPPER.writeValueAsString(value);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("failed to serialize response", e);
+        }
+    }
+}
