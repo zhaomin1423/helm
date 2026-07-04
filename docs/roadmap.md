@@ -426,8 +426,8 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 
 ### 当前活跃 Milestone
 
-- Active: _none_
-- Recommended next: M0 remaining API policy decisions, then M3 engine hardening
+- Active: _none_（系统设计 Milestone 2 Provider/Skill/Sandbox 已完成）
+- Recommended next: 系统设计 Milestone 3 HTTP/CLI（见 `docs/helm-system-design-milestones.md`）
 
 ### 当前阻塞项
 
@@ -452,6 +452,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 
 | Date | Update |
 | --- | --- |
+| 2026-07-04 | 完成系统设计 Milestone 2：新增 `helm-provider-openai`、`helm-provider-anthropic`、`helm-sandbox-local`；`helm-core` 发布 test-jar 提供 `ModelProviderContractTest`/`SandboxContractTest` 契约基类；`helm-runtime` 增加 `ClasspathSkillLoader`。FakeProvider/InMemorySandbox/LocalSandbox 及两个真实 provider 均通过契约测试；切换验证通过；`mvn verify` 全绿（107 测试），core 三模块无新增生产依赖。 |
 | 2026-06-29 | 完成 M0/M1 first slice：`AgentConfig` validation、operation/workflow status enum、runtime inspection API、event taxonomy、`OperationHandle`/`dispatch`、`docs/contracts/runtime-store.md`。 |
 | 2026-06-28 | 创建生产路线图，形成 M0-M11 计划，并合并会话级 findings/progress 到单一长期文档。 |
 
@@ -459,6 +460,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 
 | Date | Command | Result |
 | --- | --- | --- |
+| 2026-07-04 | `JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH mvn -f /Users/zhaomin/Files/projects/helm/pom.xml verify` | BUILD SUCCESS；107 tests；Spotless passed |
 | 2026-06-29 | `JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH mvn -f /Users/zhaomin/Files/projects/helm/pom.xml verify` | BUILD SUCCESS；47 tests；Spotless passed |
 | 2026-06-28 | `JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH mvn -f /Users/zhaomin/Files/projects/helm/pom.xml verify` | BUILD SUCCESS；35 tests；Spotless passed |
 
