@@ -19,6 +19,7 @@
     <module>helm-provider-anthropic</module>
     <module>helm-http-core</module>
     <module>helm-http-servlet</module>
+    <module>helm-cli</module>
     <module>examples/coding-workflow</module>
   </modules>
 
