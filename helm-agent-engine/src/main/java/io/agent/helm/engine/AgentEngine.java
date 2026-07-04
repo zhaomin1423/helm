@@ -17,7 +17,8 @@ public final class AgentEngine {
         for (int turn = 0; turn < request.maxTurns(); turn++) {
             TurnResult result = turnRunner.run(
                     request.provider(),
-                    new ModelRequest(request.model(), request.instructions(), messages, request.timeout()));
+                    new ModelRequest(
+                            request.model(), request.instructions(), request.tools(), messages, request.timeout()));
 
             if (result.toolCalls().isEmpty()) {
                 HelmMessage assistant = HelmMessage.assistant(result.text());

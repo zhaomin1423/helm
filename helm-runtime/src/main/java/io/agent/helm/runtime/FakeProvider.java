@@ -11,14 +11,19 @@ import java.util.concurrent.Flow;
 
 public final class FakeProvider implements ModelProvider {
     private final String providerId;
-    private final Queue<ModelStreamEvent[]> scripts = new ConcurrentLinkedQueue<>();
+    private final Queue<Script> scripts = new ConcurrentLinkedQueue<>();
 
     public FakeProvider(String providerId) {
         this.providerId = providerId;
     }
 
     public void enqueue(ModelStreamEvent... events) {
-        scripts.add(Arrays.copyOf(events, events.length));
+        scripts.add(Script.of(Arrays.copyOf(events, events.length)));
+    }
+
+    /** Make the next {@link #stream} call surface {@code error} via {@code onError}. */
+    public void failWith(RuntimeException error) {
+        scripts.add(Script.error(error));
     }
 
     @Override
@@ -28,9 +33,40 @@ public final class FakeProvider implements ModelProvider {
 
     @Override
     public Flow.Publisher<ModelStreamEvent> stream(ModelRequest request) {
-        ModelStreamEvent[] script = scripts.poll();
-        return subscriber -> subscriber.onSubscribe(
-                new ScriptSubscription(subscriber, script == null ? new ModelStreamEvent[0] : script));
+        Script script = scripts.poll();
+        return subscriber -> {
+            if (script != null && script.isError()) {
+                subscriber.onSubscribe(NoopSubscription.INSTANCE);
+                subscriber.onError(script.error());
+                return;
+            }
+            ModelStreamEvent[] events = script == null ? new ModelStreamEvent[0] : script.events();
+            subscriber.onSubscribe(new ScriptSubscription(subscriber, events));
+        };
+    }
+
+    private enum NoopSubscription implements Flow.Subscription {
+        INSTANCE;
+
+        @Override
+        public void request(long n) {}
+
+        @Override
+        public void cancel() {}
+    }
+
+    private record Script(ModelStreamEvent[] events, RuntimeException error) {
+        static Script of(ModelStreamEvent[] events) {
+            return new Script(events, null);
+        }
+
+        static Script error(RuntimeException error) {
+            return new Script(null, error);
+        }
+
+        boolean isError() {
+            return error != null;
+        }
     }
 
     private static final class ScriptSubscription implements Flow.Subscription {

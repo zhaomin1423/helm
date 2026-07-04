@@ -24,6 +24,7 @@ final class AgentEngineTest {
         AgentEngineResult result = engine.run(new AgentEngineRequest(
                 ModelRef.parse("fake/test"),
                 "Be helpful.",
+                List.of(),
                 List.of(HelmMessage.user("hello")),
                 new ScriptedProvider(List.of(
                         new ModelStreamEvent.ContentDelta("hi"), new ModelStreamEvent.Completed(new TokenUsage(1, 1)))),
@@ -51,6 +52,7 @@ final class AgentEngineTest {
                 .run(new AgentEngineRequest(
                         ModelRef.parse("fake/test"),
                         "Use tools.",
+                        List.of(),
                         List.of(HelmMessage.user("run echo")),
                         provider,
                         executor,
@@ -89,6 +91,7 @@ final class AgentEngineTest {
                                 new ModelRequest(
                                         ModelRef.parse("fake/test"),
                                         "Wait.",
+                                        List.of(),
                                         List.of(HelmMessage.user("hang")),
                                         Duration.ofMillis(10))))
                 .isInstanceOf(IllegalStateException.class)
@@ -107,6 +110,7 @@ final class AgentEngineTest {
                                 new ModelRequest(
                                         ModelRef.parse("fake/test"),
                                         "Wait.",
+                                        List.of(),
                                         List.of(HelmMessage.user("hang")),
                                         Duration.ofMillis(10))))
                 .isInstanceOf(IllegalStateException.class)
@@ -125,6 +129,7 @@ final class AgentEngineTest {
                         .run(new AgentEngineRequest(
                                 ModelRef.parse("fake/test"),
                                 "Use tools.",
+                                List.of(),
                                 List.of(HelmMessage.user("run echo")),
                                 provider,
                                 (operationId, name, input) -> "output",

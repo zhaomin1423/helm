@@ -17,6 +17,7 @@ import io.agent.helm.core.store.OperationStatus;
 import io.agent.helm.core.store.RuntimeStore;
 import io.agent.helm.core.tool.Tool;
 import io.agent.helm.core.tool.ToolContext;
+import io.agent.helm.core.tool.ToolDescriptor;
 import io.agent.helm.engine.AgentEngine;
 import io.agent.helm.engine.AgentEngineRequest;
 import io.agent.helm.engine.AgentEngineResult;
@@ -141,9 +142,12 @@ public final class AgentRuntime {
                     now);
             store.saveSession(running);
 
+            List<ToolDescriptor> toolDescriptors =
+                    config.tools().stream().map(ToolDescriptor::from).toList();
             AgentEngineResult result = engine.run(new AgentEngineRequest(
                     config.model(),
                     config.instructions(),
+                    toolDescriptors,
                     messages,
                     provider,
                     toolExecutor(config, operationId),
