@@ -2,6 +2,8 @@ package io.agent.helm.runtime;
 
 import io.agent.helm.core.agent.AgentSessionApi;
 import io.agent.helm.core.agent.PromptResult;
+import io.agent.helm.core.agent.PromptStreamEvent;
+import java.util.concurrent.Flow;
 
 final class AgentSession implements AgentSessionApi {
     private final AgentRuntime runtime;
@@ -19,5 +21,10 @@ final class AgentSession implements AgentSessionApi {
     @Override
     public PromptResult prompt(String text) {
         return runtime.prompt(new AgentPromptRequest(agentName, instanceId, sessionName, text));
+    }
+
+    @Override
+    public Flow.Publisher<PromptStreamEvent> promptStream(String text) {
+        return runtime.promptStream(new AgentPromptRequest(agentName, instanceId, sessionName, text));
     }
 }

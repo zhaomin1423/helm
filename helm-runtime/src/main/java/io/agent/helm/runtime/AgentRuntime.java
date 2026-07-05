@@ -1,10 +1,16 @@
 package io.agent.helm.runtime;
 
+import io.agent.helm.core.admission.AcquisitionResult;
+import io.agent.helm.core.admission.RateLimitKey;
+import io.agent.helm.core.admission.RateLimiter;
 import io.agent.helm.core.agent.AgentConfig;
 import io.agent.helm.core.agent.AgentContext;
 import io.agent.helm.core.agent.AgentDefinition;
 import io.agent.helm.core.agent.PromptResult;
+import io.agent.helm.core.agent.PromptStreamEvent;
 import io.agent.helm.core.error.AgentNotFoundException;
+import io.agent.helm.core.error.AuthorizationException;
+import io.agent.helm.core.error.RateLimitExceededException;
 import io.agent.helm.core.error.SessionBusyException;
 import io.agent.helm.core.error.ToolExecutionException;
 import io.agent.helm.core.event.RuntimeEventRecord;
@@ -14,6 +20,12 @@ import io.agent.helm.core.memory.MemoryStore;
 import io.agent.helm.core.message.HelmMessage;
 import io.agent.helm.core.message.Role;
 import io.agent.helm.core.model.ModelProvider;
+import io.agent.helm.core.model.TokenUsage;
+import io.agent.helm.core.security.AuthorizationResult;
+import io.agent.helm.core.security.HelmAction;
+import io.agent.helm.core.security.HelmAuthorizer;
+import io.agent.helm.core.security.HelmResource;
+import io.agent.helm.core.security.HelmSecurityContext;
 import io.agent.helm.core.store.AgentSessionState;
 import io.agent.helm.core.store.OperationRecord;
 import io.agent.helm.core.store.OperationStatus;
@@ -24,6 +36,8 @@ import io.agent.helm.core.tool.ToolDescriptor;
 import io.agent.helm.engine.AgentEngine;
 import io.agent.helm.engine.AgentEngineRequest;
 import io.agent.helm.engine.AgentEngineResult;
+import io.agent.helm.engine.EngineEvent;
+import io.agent.helm.engine.EngineEventListener;
 import io.agent.helm.engine.ToolExecutor;
 import io.agent.helm.runtime.memory.SaveMemoryTool;
 import java.time.Duration;
@@ -37,6 +51,9 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class AgentRuntime {
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
@@ -47,6 +64,9 @@ public final class AgentRuntime {
     private final RuntimeStore store;
     private final MemoryStore memoryStore;
     private final int maxSessionMessages;
+    private final HelmAuthorizer authorizer;
+    private final RateLimiter rateLimiter;
+    private final HelmSecurityContext defaultSecurityContext;
     private final AgentEngine engine = new AgentEngine();
     private final ConcurrentMap<String, Boolean> activeSessions = new ConcurrentHashMap<>();
 
@@ -55,7 +75,10 @@ public final class AgentRuntime {
             List<ModelProvider> providers,
             RuntimeStore store,
             MemoryStore memoryStore,
-            int maxSessionMessages) {
+            int maxSessionMessages,
+            HelmAuthorizer authorizer,
+            RateLimiter rateLimiter,
+            HelmSecurityContext defaultSecurityContext) {
         Map<String, AgentDefinition> agentMap = new LinkedHashMap<>();
         for (AgentDefinition agent : agents) {
             agentMap.put(agent.name(), agent);
@@ -65,6 +88,10 @@ public final class AgentRuntime {
         this.store = store;
         this.memoryStore = memoryStore;
         this.maxSessionMessages = maxSessionMessages;
+        this.authorizer = authorizer == null ? HelmAuthorizer.allowAll() : authorizer;
+        this.rateLimiter = rateLimiter == null ? RateLimiter.unlimited() : rateLimiter;
+        this.defaultSecurityContext =
+                defaultSecurityContext == null ? HelmSecurityContext.anonymous() : defaultSecurityContext;
     }
 
     public static Builder builder() {
@@ -77,14 +104,37 @@ public final class AgentRuntime {
 
     public PromptResult prompt(AgentPromptRequest request) {
         String operationId = "op_" + UUID.randomUUID();
-        PromptExecution execution = executePrompt(request, operationId);
+        PromptExecution execution = executePrompt(request, operationId, defaultSecurityContext);
         return new PromptResult(execution.operationId(), execution.text());
+    }
+
+    /**
+     * Streams prompt events to the subscriber. @Preview the current implementation runs the operation to completion
+     * before emitting a single content delta and a completion event; true incremental token streaming is planned.
+     */
+    @io.agent.helm.core.annotation.Preview
+    public Flow.Publisher<PromptStreamEvent> promptStream(AgentPromptRequest request) {
+        return subscriber -> {
+            SubmissionPublisher<PromptStreamEvent> pub = new SubmissionPublisher<>();
+            pub.subscribe(subscriber);
+            String operationId = "op_" + UUID.randomUUID();
+            try {
+                PromptExecution exec = executePrompt(request, operationId, defaultSecurityContext);
+                pub.submit(new PromptStreamEvent.ContentDelta(exec.text()));
+                pub.submit(new PromptStreamEvent.OperationCompleted(operationId, exec.text(), new TokenUsage(0, 0)));
+                pub.close();
+            } catch (RuntimeException e) {
+                String code = (e instanceof io.agent.helm.core.error.HelmException he) ? he.code() : "INTERNAL_ERROR";
+                pub.submit(new PromptStreamEvent.OperationFailed(operationId, code, String.valueOf(e.getMessage())));
+                pub.closeExceptionally(e);
+            }
+        };
     }
 
     public OperationHandle dispatch(AgentPromptRequest request) {
         String operationId = "op_" + UUID.randomUUID();
         try {
-            executePrompt(request, operationId);
+            executePrompt(request, operationId, defaultSecurityContext);
         } catch (RuntimeException e) {
             OperationStatus status = store.loadOperation(operationId)
                     .map(OperationRecord::status)
@@ -108,28 +158,35 @@ public final class AgentRuntime {
 
     /** Lists all persisted agent sessions, ordered by creation time. */
     public List<AgentSessionState> listSessions() {
+        authorize(defaultSecurityContext, HelmAction.LIST_SESSIONS, HelmResource.of("RUNTIME", ""));
         return store.listSessions();
     }
 
     /** Loads a persisted session (including its message history) by id. */
     public Optional<AgentSessionState> getSession(String sessionId) {
+        authorize(defaultSecurityContext, HelmAction.READ_SESSION, HelmResource.of("SESSION", sessionId));
         return store.loadSession(sessionId);
     }
 
     /** Deletes a session and its history so the next prompt starts fresh. */
     public void resetSession(String sessionId) {
+        authorize(defaultSecurityContext, HelmAction.RESET_SESSION, HelmResource.of("SESSION", sessionId));
         if (activeSessions.containsKey(sessionId)) {
             throw new SessionBusyException("Session is busy", Map.of("sessionId", sessionId), Map.of());
         }
         store.deleteSession(sessionId);
     }
 
-    private PromptExecution executePrompt(AgentPromptRequest request, String operationId) {
+    private PromptExecution executePrompt(
+            AgentPromptRequest request, String operationId, HelmSecurityContext securityContext) {
         String sessionId = sessionId(request.agentName(), request.instanceId(), request.sessionName());
+        authorize(securityContext, HelmAction.PROMPT, HelmResource.of("AGENT", request.agentName()));
+        acquireRate(RateLimitKey.principal(securityContext.principal()));
         if (activeSessions.putIfAbsent(sessionId, Boolean.TRUE) != null) {
             throw new SessionBusyException("Session is busy", Map.of("sessionId", sessionId), Map.of());
         }
         Instant now = Instant.now();
+        AtomicInteger eventSequence = new AtomicInteger(0);
 
         try {
             store.saveOperation(new OperationRecord(
@@ -145,7 +202,7 @@ public final class AgentRuntime {
             appendEvent(
                     operationId,
                     null,
-                    1,
+                    eventSequence.incrementAndGet(),
                     RuntimeEventType.OPERATION_STARTED,
                     Map.of("text", String.valueOf(request.text())));
 
@@ -191,7 +248,8 @@ public final class AgentRuntime {
                     provider,
                     toolExecutor(tools, operationId),
                     DEFAULT_TIMEOUT,
-                    DEFAULT_MAX_TURNS));
+                    DEFAULT_MAX_TURNS,
+                    buildEngineListener(operationId, eventSequence)));
 
             AgentSessionState updated = new AgentSessionState(
                     sessionId,
@@ -216,7 +274,7 @@ public final class AgentRuntime {
             appendEventSafely(
                     operationId,
                     null,
-                    2,
+                    eventSequence.incrementAndGet(),
                     RuntimeEventType.OPERATION_SUCCEEDED,
                     Map.of("text", String.valueOf(result.text())));
             return new PromptExecution(operationId, result.text());
@@ -232,7 +290,8 @@ public final class AgentRuntime {
                     error,
                     now,
                     Instant.now()));
-            appendEventSafely(operationId, null, 2, RuntimeEventType.OPERATION_FAILED, error);
+            appendEventSafely(
+                    operationId, null, eventSequence.incrementAndGet(), RuntimeEventType.OPERATION_FAILED, error);
             throw e;
         } finally {
             activeSessions.remove(sessionId);
@@ -307,8 +366,7 @@ public final class AgentRuntime {
         Tool<?, ?> tool = tools.stream()
                 .filter(candidate -> candidate.name().equals(name))
                 .findFirst()
-                .orElseThrow(() -> new ToolExecutionException(
-                        "Tool not found", Map.of("tool", name, "operationId", operationId), Map.of()));
+                .orElseThrow(() -> ToolExecutionException.notFound(name));
 
         try {
             return executeUnchecked(tool, operationId, input);
@@ -362,6 +420,94 @@ public final class AgentRuntime {
         }
     }
 
+    /** Bridges {@link EngineEvent}s to {@link RuntimeEventRecord}s persisted in the store. */
+    private EngineEventListener buildEngineListener(String operationId, AtomicInteger sequence) {
+        return event -> {
+            try {
+                appendEvent(
+                        operationId,
+                        null,
+                        sequence.incrementAndGet(),
+                        engineEventType(event),
+                        engineEventPayload(event));
+            } catch (RuntimeException ignored) {
+                // Engine event persistence must not change the operation outcome.
+            }
+        };
+    }
+
+    private static RuntimeEventType engineEventType(EngineEvent event) {
+        return switch (event) {
+            case EngineEvent.TurnStarted ignored -> RuntimeEventType.TURN_STARTED;
+            case EngineEvent.TurnSucceeded ignored -> RuntimeEventType.TURN_SUCCEEDED;
+            case EngineEvent.TurnFailed ignored -> RuntimeEventType.TURN_FAILED;
+            case EngineEvent.ModelStarted ignored -> RuntimeEventType.MODEL_STARTED;
+            case EngineEvent.ModelSucceeded ignored -> RuntimeEventType.MODEL_SUCCEEDED;
+            case EngineEvent.ModelFailed ignored -> RuntimeEventType.MODEL_FAILED;
+            case EngineEvent.ToolStarted ignored -> RuntimeEventType.TOOL_STARTED;
+            case EngineEvent.ToolSucceeded ignored -> RuntimeEventType.TOOL_SUCCEEDED;
+            case EngineEvent.ToolFailed ignored -> RuntimeEventType.TOOL_FAILED;
+        };
+    }
+
+    private static Map<String, Object> engineEventPayload(EngineEvent event) {
+        return switch (event) {
+            case EngineEvent.TurnStarted t -> Map.of("turn", t.turnIndex());
+            case EngineEvent.TurnSucceeded t -> Map.of(
+                    "turn",
+                    t.turnIndex(),
+                    "inputTokens",
+                    t.usage().inputTokens(),
+                    "outputTokens",
+                    t.usage().outputTokens());
+            case EngineEvent.TurnFailed t -> Map.of("turn", t.turnIndex(), "code", t.code());
+            case EngineEvent.ModelStarted m -> Map.of("turn", m.turnIndex());
+            case EngineEvent.ModelSucceeded m -> Map.of(
+                    "turn",
+                    m.turnIndex(),
+                    "inputTokens",
+                    m.usage().inputTokens(),
+                    "outputTokens",
+                    m.usage().outputTokens());
+            case EngineEvent.ModelFailed m -> Map.of(
+                    "turn", m.turnIndex(), "code", m.code(), "message", String.valueOf(m.message()));
+            case EngineEvent.ToolStarted t -> Map.of(
+                    "turn", t.turnIndex(), "tool", t.toolName(), "toolCallId", t.toolCallId());
+            case EngineEvent.ToolSucceeded t -> Map.of(
+                    "turn", t.turnIndex(), "tool", t.toolName(), "toolCallId", t.toolCallId());
+            case EngineEvent.ToolFailed t -> Map.of(
+                    "turn",
+                    t.turnIndex(),
+                    "tool",
+                    t.toolName(),
+                    "toolCallId",
+                    t.toolCallId(),
+                    "code",
+                    t.code(),
+                    "message",
+                    String.valueOf(t.message()));
+        };
+    }
+
+    private void authorize(HelmSecurityContext context, HelmAction action, HelmResource resource) {
+        AuthorizationResult result = authorizer.authorize(context, action, resource);
+        if (!result.allowed()) {
+            throw AuthorizationException.forbidden(
+                    "Access denied: " + action,
+                    Map.of("action", action.name(), "resource", resource.name(), "reason", result.reason()));
+        }
+    }
+
+    private void acquireRate(RateLimitKey key) {
+        AcquisitionResult result = rateLimiter.tryAcquire(key);
+        if (!result.allowed()) {
+            throw new RateLimitExceededException(
+                    "Rate limit exceeded",
+                    Map.of("dimension", key.dimension(), "value", key.value(), "retryAfterMs", result.retryAfterMs()),
+                    Map.of());
+        }
+    }
+
     private static String sessionId(String agentName, String instanceId, String sessionName) {
         return agentName + ":" + instanceId + ":" + sessionName;
     }
@@ -382,6 +528,9 @@ public final class AgentRuntime {
         private RuntimeStore store = new InMemoryRuntimeStore();
         private MemoryStore memoryStore;
         private int maxSessionMessages;
+        private HelmAuthorizer authorizer;
+        private RateLimiter rateLimiter;
+        private HelmSecurityContext defaultSecurityContext;
 
         public Builder agent(AgentDefinition agent) {
             agents.add(Objects.requireNonNull(agent, "agent"));
@@ -419,8 +568,34 @@ public final class AgentRuntime {
             return this;
         }
 
+        /** Configures authorization; defaults to allow-all (dev). Production should supply a real authorizer. */
+        public Builder authorizer(HelmAuthorizer authorizer) {
+            this.authorizer = authorizer;
+            return this;
+        }
+
+        /** Configures admission rate limiting; defaults to unlimited. */
+        public Builder rateLimiter(RateLimiter rateLimiter) {
+            this.rateLimiter = rateLimiter;
+            return this;
+        }
+
+        /** Default security context for requests that do not carry one (e.g. CLI). Defaults to anonymous. */
+        public Builder defaultSecurityContext(HelmSecurityContext defaultSecurityContext) {
+            this.defaultSecurityContext = defaultSecurityContext;
+            return this;
+        }
+
         public AgentRuntime build() {
-            return new AgentRuntime(agents, providers, store, memoryStore, maxSessionMessages);
+            return new AgentRuntime(
+                    agents,
+                    providers,
+                    store,
+                    memoryStore,
+                    maxSessionMessages,
+                    authorizer,
+                    rateLimiter,
+                    defaultSecurityContext);
         }
     }
 }

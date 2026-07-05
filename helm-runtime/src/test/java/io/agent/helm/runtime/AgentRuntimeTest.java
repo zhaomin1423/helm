@@ -51,7 +51,12 @@ final class AgentRuntimeTest {
         assertThat(runtime.getOperationEvents(result.operationId()))
                 .extracting(RuntimeEventRecord::type)
                 .containsExactly(
-                        RuntimeEventType.OPERATION_STARTED.type(), RuntimeEventType.OPERATION_SUCCEEDED.type());
+                        RuntimeEventType.OPERATION_STARTED.type(),
+                        RuntimeEventType.TURN_STARTED.type(),
+                        RuntimeEventType.MODEL_STARTED.type(),
+                        RuntimeEventType.MODEL_SUCCEEDED.type(),
+                        RuntimeEventType.TURN_SUCCEEDED.type(),
+                        RuntimeEventType.OPERATION_SUCCEEDED.type());
     }
 
     @Test
@@ -119,7 +124,12 @@ final class AgentRuntimeTest {
         assertThat(runtime.getOperationEvents(handle.operationId()))
                 .extracting(RuntimeEventRecord::type)
                 .containsExactly(
-                        RuntimeEventType.OPERATION_STARTED.type(), RuntimeEventType.OPERATION_SUCCEEDED.type());
+                        RuntimeEventType.OPERATION_STARTED.type(),
+                        RuntimeEventType.TURN_STARTED.type(),
+                        RuntimeEventType.MODEL_STARTED.type(),
+                        RuntimeEventType.MODEL_SUCCEEDED.type(),
+                        RuntimeEventType.TURN_SUCCEEDED.type(),
+                        RuntimeEventType.OPERATION_SUCCEEDED.type());
     }
 
     @Test
