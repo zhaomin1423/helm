@@ -42,7 +42,7 @@ final class AnthropicProviderTest {
     void setUp() {
         provider = AnthropicProvider.builder()
                 .providerId("anthropic")
-                .baseUrl(wireMock.baseUrl())
+                .baseUrl(wireMock.baseUrl() + "/v1")
                 .apiKey("test-key")
                 .build();
     }

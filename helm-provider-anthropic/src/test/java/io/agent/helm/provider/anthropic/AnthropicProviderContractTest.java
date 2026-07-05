@@ -23,7 +23,7 @@ final class AnthropicProviderContractTest extends ModelProviderContractTest {
     void setUpProvider() {
         provider = AnthropicProvider.builder()
                 .providerId("anthropic")
-                .baseUrl(wireMock.baseUrl())
+                .baseUrl(wireMock.baseUrl() + "/v1")
                 .apiKey("test-key")
                 .build();
     }

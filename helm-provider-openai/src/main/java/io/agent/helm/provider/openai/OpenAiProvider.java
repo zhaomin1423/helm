@@ -1,10 +1,12 @@
 package io.agent.helm.provider.openai;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.agent.helm.core.error.ContextOverflowException;
+import io.agent.helm.core.error.ErrorCode;
 import io.agent.helm.core.error.HelmException;
 import io.agent.helm.core.error.ProviderException;
 import io.agent.helm.core.message.ContentBlock;
@@ -26,23 +28,34 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * A {@link ModelProvider} for OpenAI-compatible Chat Completions endpoints (configurable base URL, so vLLM, Ollama, and
  * other compatible servers work). Streaming responses (SSE) are normalized to Helm's {@link ModelStreamEvent} model;
  * tool-call argument fragments are aggregated before a {@link ModelStreamEvent.ToolCallRequested} is emitted.
+ *
+ * <p><b>Base URL convention.</b> {@code baseUrl} includes the API version path segment (e.g.
+ * {@code https://api.openai.com/v1}); request paths are appended without re-adding {@code /v1}. A trailing {@code /} is
+ * stripped on build.
+ *
+ * <p><b>Retry policy.</b> This provider does not retry 429/5xx responses. Callers are responsible for backoff and retry
+ * (e.g. via a wrapping {@code ModelProvider}); the {@code Retry-After} header is surfaced in error details when
+ * present.
  */
 public final class OpenAiProvider implements ModelProvider {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -74,55 +87,77 @@ public final class OpenAiProvider implements ModelProvider {
     @Override
     public Flow.Publisher<ModelStreamEvent> stream(ModelRequest request) {
         // Defer starting the producer until a subscriber is registered, so no items are submitted
-        // (and dropped) before onSubscribe.
+        // (and dropped) before onSubscribe. The subscriber is wrapped so subscriber cancellation
+        // is observable from the streaming virtual thread.
         return subscriber -> {
             SubmissionPublisher<ModelStreamEvent> publisher = new SubmissionPublisher<>();
-            publisher.subscribe(subscriber);
-            Thread.startVirtualThread(() -> streamAsync(request, publisher));
+            AtomicBoolean cancelled = new AtomicBoolean(false);
+            publisher.subscribe(new CancellationTrackingSubscriber(subscriber, cancelled));
+            Thread.startVirtualThread(() -> streamAsync(request, publisher, cancelled));
         };
     }
 
-    private void streamAsync(ModelRequest request, SubmissionPublisher<ModelStreamEvent> publisher) {
+    private void streamAsync(
+            ModelRequest request, SubmissionPublisher<ModelStreamEvent> publisher, AtomicBoolean cancelled) {
         try {
             HttpRequest httpRequest = buildRequest(request);
             HttpResponse<InputStream> response = httpClient.send(httpRequest, BodyHandlers.ofInputStream());
             int status = response.statusCode();
             try (InputStream body = response.body()) {
                 if (status >= 400) {
-                    publisher.closeExceptionally(mapHttpError(status, readAll(body)));
+                    publisher.closeExceptionally(mapHttpError(status, response.headers(), readAll(body)));
                     return;
                 }
-                parseSse(body, publisher);
+                if (!isEventStream(response.headers())) {
+                    publisher.closeExceptionally(new ProviderException(
+                            ErrorCode.PROVIDER_ERROR,
+                            "openai api returned a non-streaming response",
+                            Map.of("provider", providerId, "status", status),
+                            Map.of("contentType", contentType(response.headers()))));
+                    return;
+                }
+                parseSse(body, publisher, cancelled);
             }
         } catch (HttpTimeoutException e) {
             publisher.closeExceptionally(new ProviderException(
-                    ProviderException.TIMEOUT, "request timed out", Map.of("provider", providerId), Map.of()));
+                    ErrorCode.PROVIDER_TIMEOUT, "request timed out", Map.of("provider", providerId), Map.of(), e));
         } catch (IOException e) {
             publisher.closeExceptionally(new ProviderException(
+                    ErrorCode.PROVIDER_ERROR,
                     "openai request failed",
                     Map.of("provider", providerId),
-                    Map.of("message", String.valueOf(e.getMessage()))));
+                    Map.of("message", String.valueOf(e.getMessage())),
+                    e));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            publisher.closeExceptionally(
-                    new ProviderException("request interrupted", Map.of("provider", providerId), Map.of()));
+            publisher.closeExceptionally(new ProviderException(
+                    ErrorCode.PROVIDER_ERROR, "request interrupted", Map.of("provider", providerId), Map.of(), e));
         } catch (RuntimeException e) {
             publisher.closeExceptionally(
                     e instanceof HelmException he
                             ? he
                             : new ProviderException(
+                                    ErrorCode.PROVIDER_ERROR,
                                     "unexpected error",
                                     Map.of("provider", providerId),
-                                    Map.of("message", String.valueOf(e.getMessage()))));
+                                    Map.of("message", String.valueOf(e.getMessage())),
+                                    e));
         }
     }
 
-    private void parseSse(InputStream body, SubmissionPublisher<ModelStreamEvent> publisher) throws IOException {
+    private void parseSse(InputStream body, SubmissionPublisher<ModelStreamEvent> publisher, AtomicBoolean cancelled)
+            throws IOException {
         Map<Integer, ToolCallAccumulator> toolCalls = new LinkedHashMap<>();
         TokenUsage usage = null;
+        String finishReason = null;
+        boolean receivedAnyEvent = false;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                // Stop reading once the subscriber has cancelled so the HTTP body is released promptly.
+                if (cancelled.get() || !publisher.hasSubscribers()) {
+                    return;
+                }
                 if (!line.startsWith("data:")) {
                     continue;
                 }
@@ -130,7 +165,30 @@ public final class OpenAiProvider implements ModelProvider {
                 if (data.isEmpty() || data.equals("[DONE]")) {
                     continue;
                 }
-                JsonNode node = OBJECT_MAPPER.readTree(data);
+                receivedAnyEvent = true;
+                JsonNode node;
+                try {
+                    node = OBJECT_MAPPER.readTree(data);
+                } catch (JsonProcessingException e) {
+                    publisher.closeExceptionally(new ProviderException(
+                            ErrorCode.PROVIDER_ERROR,
+                            "malformed SSE event from openai",
+                            Map.of("provider", providerId),
+                            Map.of("line", data, "message", String.valueOf(e.getMessage())),
+                            e));
+                    return;
+                }
+                // Mid-stream API error payload: surface immediately instead of silently dropping.
+                JsonNode errorNode = node.path("error");
+                if (!errorNode.isMissingNode() && !errorNode.isNull()) {
+                    String message = errorNode.path("message").asText("openai stream error");
+                    publisher.closeExceptionally(new ProviderException(
+                            ErrorCode.PROVIDER_ERROR,
+                            message,
+                            Map.of("provider", providerId),
+                            Map.of("error", errorNode.toString())));
+                    return;
+                }
                 JsonNode choices = node.path("choices");
                 JsonNode delta = choices.path(0).path("delta");
                 JsonNode content = delta.path("content");
@@ -157,7 +215,10 @@ public final class OpenAiProvider implements ModelProvider {
                         }
                     }
                 }
-                String finishReason = choices.path(0).path("finish_reason").asText(null);
+                String chunkFinish = choices.path(0).path("finish_reason").asText(null);
+                if (chunkFinish != null && !chunkFinish.isEmpty() && !"null".equals(chunkFinish)) {
+                    finishReason = chunkFinish;
+                }
                 if ("tool_calls".equals(finishReason)) {
                     for (ToolCallAccumulator acc : toolCalls.values()) {
                         publisher.submit(new ModelStreamEvent.ToolCallRequested(
@@ -171,11 +232,19 @@ public final class OpenAiProvider implements ModelProvider {
                 }
             }
         }
+        if (!receivedAnyEvent) {
+            publisher.closeExceptionally(new ProviderException(
+                    ErrorCode.PROVIDER_ERROR,
+                    "openai stream ended without any events",
+                    Map.of("provider", providerId),
+                    Map.of()));
+            return;
+        }
         for (ToolCallAccumulator acc : toolCalls.values()) {
             publisher.submit(
                     new ModelStreamEvent.ToolCallRequested(acc.id, acc.name, parseArguments(acc.arguments.toString())));
         }
-        publisher.submit(new ModelStreamEvent.Completed(usage != null ? usage : new TokenUsage(0, 0)));
+        publisher.submit(new ModelStreamEvent.Completed(usage != null ? usage : new TokenUsage(0, 0), finishReason));
         publisher.close();
     }
 
@@ -185,7 +254,7 @@ public final class OpenAiProvider implements ModelProvider {
         body.put("stream", true);
         ObjectNode streamOptions = body.putObject("stream_options");
         streamOptions.put("include_usage", true);
-        body.set("messages", buildMessages(request.messages()));
+        body.set("messages", buildMessages(request.instructions(), request.messages()));
         if (!request.tools().isEmpty()) {
             body.set("tools", buildTools(request.tools()));
         }
@@ -193,33 +262,45 @@ public final class OpenAiProvider implements ModelProvider {
         return HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/chat/completions"))
                 .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
                 .header("Authorization", "Bearer " + apiKey)
                 .timeout(timeout)
                 .POST(HttpRequest.BodyPublishers.ofString(OBJECT_MAPPER.writeValueAsString(body)))
                 .build();
     }
 
-    private ArrayNode buildMessages(List<HelmMessage> messages) {
+    private ArrayNode buildMessages(String instructions, List<HelmMessage> messages) {
         ArrayNode array = OBJECT_MAPPER.createArrayNode();
+        // Prepend a system message when the request carries instructions, mirroring the Anthropic provider.
+        if (instructions != null && !instructions.isBlank()) {
+            ObjectNode system = OBJECT_MAPPER.createObjectNode();
+            system.put("role", "system");
+            system.put("content", instructions);
+            array.add(system);
+        }
         for (HelmMessage message : messages) {
-            array.add(toMessageNode(message));
+            for (ObjectNode node : toMessageNodes(message)) {
+                array.add(node);
+            }
         }
         return array;
     }
 
-    private ObjectNode toMessageNode(HelmMessage message) {
-        ObjectNode node = OBJECT_MAPPER.createObjectNode();
-        node.put("role", roleName(message.role()));
+    /**
+     * Expands a single {@link HelmMessage} into one or more OpenAI message nodes. A message containing multiple
+     * {@link ToolResultBlock}s is split into one {@code tool} message per {@code tool_call_id}.
+     */
+    private List<ObjectNode> toMessageNodes(HelmMessage message) {
+        List<ObjectNode> nodes = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         ArrayNode toolCalls = null;
-        String toolCallId = null;
-        Object toolOutput = null;
+        List<ToolResultBlock> toolResults = new ArrayList<>();
         for (ContentBlock block : message.content()) {
             switch (block) {
                 case TextBlock t -> text.append(t.text());
                 case ToolCallBlock tc -> {
                     if (toolCalls == null) {
-                        toolCalls = node.putArray("tool_calls");
+                        toolCalls = OBJECT_MAPPER.createArrayNode();
                     }
                     ObjectNode tcNode = toolCalls.addObject();
                     tcNode.put("id", tc.id());
@@ -228,23 +309,32 @@ public final class OpenAiProvider implements ModelProvider {
                     fn.put("name", tc.name());
                     fn.put("arguments", tc.input() == null ? "" : writeJson(tc.input()));
                 }
-                case ToolResultBlock tr -> {
-                    toolCallId = tr.toolCallId();
-                    toolOutput = tr.output();
-                }
+                case ToolResultBlock tr -> toolResults.add(tr);
             }
         }
-        if (toolCallId != null) {
-            node.put("tool_call_id", toolCallId);
-            node.put("content", toolOutput == null ? "" : writeJson(toolOutput));
-        } else if (toolCalls != null) {
+        if (!toolResults.isEmpty()) {
+            // Emit one tool message per tool_call_id; OpenAI does not batch multiple results into one message.
+            for (ToolResultBlock tr : toolResults) {
+                ObjectNode node = OBJECT_MAPPER.createObjectNode();
+                node.put("role", "tool");
+                node.put("tool_call_id", tr.toolCallId());
+                node.put("content", serializeToolOutput(tr.output()));
+                nodes.add(node);
+            }
+            return nodes;
+        }
+        ObjectNode node = OBJECT_MAPPER.createObjectNode();
+        node.put("role", roleName(message.role()));
+        if (toolCalls != null) {
+            node.set("tool_calls", toolCalls);
             if (!text.isEmpty()) {
                 node.put("content", text.toString());
             }
         } else {
             node.put("content", text.toString());
         }
-        return node;
+        nodes.add(node);
+        return nodes;
     }
 
     private ArrayNode buildTools(List<ToolDescriptor> tools) {
@@ -263,6 +353,9 @@ public final class OpenAiProvider implements ModelProvider {
     private JsonNode toJsonNode(JsonSchema schema) {
         ObjectNode node = OBJECT_MAPPER.createObjectNode();
         node.put("type", schema.type());
+        if (schema.description() != null && !schema.description().isBlank()) {
+            node.put("description", schema.description());
+        }
         if (!schema.properties().isEmpty()) {
             ObjectNode props = node.putObject("properties");
             schema.properties().forEach((key, value) -> props.set(key, toJsonNode(value)));
@@ -274,26 +367,51 @@ public final class OpenAiProvider implements ModelProvider {
         if (schema.items() != null) {
             node.set("items", toJsonNode(schema.items()));
         }
+        if (schema.enumValues() != null && !schema.enumValues().isEmpty()) {
+            ArrayNode enumArray = node.putArray("enum");
+            schema.enumValues().forEach(enumArray::add);
+        }
+        if (schema.additionalProperties() != null) {
+            node.set("additionalProperties", toJsonNode(schema.additionalProperties()));
+        }
+        if (schema.nullable()) {
+            // OpenAI JSON Schema uses "type": ["string","null"] for nullable types.
+            ArrayNode types = node.putArray("type");
+            types.add(schema.type());
+            types.add("null");
+            node.remove("type");
+            node.set("type", types);
+        }
         return node;
     }
 
-    private HelmException mapHttpError(int status, String body) {
+    private HelmException mapHttpError(int status, HttpHeaders headers, String body) {
         if (status == 400 && body != null && body.contains("context_length_exceeded")) {
             return ContextOverflowException.prompt(
                     "OpenAI context length exceeded", Map.of("provider", providerId, "status", status));
         }
-        String code = ProviderException.CODE;
+        ErrorCode code = ErrorCode.PROVIDER_ERROR;
         if (status == 429) {
-            code = ProviderException.RATE_LIMITED;
+            code = ErrorCode.PROVIDER_RATE_LIMITED;
         }
-        return new ProviderException(
-                code, "openai api error", Map.of("provider", providerId, "status", status), Map.of("body", body));
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("provider", providerId);
+        details.put("status", status);
+        long retryAfterSeconds = parseRetryAfter(headers);
+        if (retryAfterSeconds >= 0) {
+            details.put("retryAfterSeconds", retryAfterSeconds);
+        }
+        return new ProviderException(code, "openai api error", details, Map.of("body", body));
     }
 
     private static TokenUsage parseUsage(JsonNode node) {
         long input = node.path("prompt_tokens").asLong(0);
         long output = node.path("completion_tokens").asLong(0);
-        return new TokenUsage(input, output);
+        long cacheRead =
+                node.path("prompt_tokens_details").path("cached_tokens").asLong(0);
+        long reasoning =
+                node.path("completion_tokens_details").path("reasoning_tokens").asLong(0);
+        return new TokenUsage(input, output, cacheRead, 0L, reasoning);
     }
 
     private static Object parseArguments(String arguments) {
@@ -303,8 +421,41 @@ public final class OpenAiProvider implements ModelProvider {
         try {
             return OBJECT_MAPPER.readValue(arguments, Object.class);
         } catch (Exception e) {
-            return arguments;
+            // Preserve the raw payload so the API roundtrip stays valid; callers can still dispatch the tool call.
+            return Map.of("_raw", arguments);
         }
+    }
+
+    private static String serializeToolOutput(Object toolOutput) {
+        if (toolOutput == null) {
+            return "";
+        }
+        // String outputs are used verbatim; JSON-serializing them would add surrounding quotes.
+        if (toolOutput instanceof String s) {
+            return s;
+        }
+        return writeJson(toolOutput);
+    }
+
+    private static boolean isEventStream(HttpHeaders headers) {
+        return contentType(headers).contains("text/event-stream");
+    }
+
+    private static String contentType(HttpHeaders headers) {
+        return headers.firstValue("Content-Type").orElse("");
+    }
+
+    private static long parseRetryAfter(HttpHeaders headers) {
+        return headers.firstValue("Retry-After")
+                .map(value -> {
+                    try {
+                        return Long.parseLong(value.trim());
+                    } catch (NumberFormatException ignored) {
+                        // HTTP-date form; not parsed to seconds here. Surfaced as-is in developer details via header.
+                        return -1L;
+                    }
+                })
+                .orElse(-1L);
     }
 
     private static String roleName(Role role) {
@@ -328,6 +479,51 @@ public final class OpenAiProvider implements ModelProvider {
         return new String(in.readAllBytes(), StandardCharsets.UTF_8);
     }
 
+    /**
+     * Wraps a subscriber so that {@link Flow.Subscription#cancel()} flips a flag observable from the streaming virtual
+     * thread, allowing the SSE reader loop to stop and release the HTTP body promptly.
+     */
+    private static final class CancellationTrackingSubscriber implements Flow.Subscriber<ModelStreamEvent> {
+        private final Flow.Subscriber<? super ModelStreamEvent> downstream;
+        private final AtomicBoolean cancelled;
+
+        CancellationTrackingSubscriber(Flow.Subscriber<? super ModelStreamEvent> downstream, AtomicBoolean cancelled) {
+            this.downstream = downstream;
+            this.cancelled = cancelled;
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            downstream.onSubscribe(new Flow.Subscription() {
+                @Override
+                public void request(long n) {
+                    subscription.request(n);
+                }
+
+                @Override
+                public void cancel() {
+                    cancelled.set(true);
+                    subscription.cancel();
+                }
+            });
+        }
+
+        @Override
+        public void onNext(ModelStreamEvent item) {
+            downstream.onNext(item);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            downstream.onError(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            downstream.onComplete();
+        }
+    }
+
     private static final class ToolCallAccumulator {
         private String id = "";
         private String name = "";
@@ -346,6 +542,11 @@ public final class OpenAiProvider implements ModelProvider {
             return this;
         }
 
+        /**
+         * Sets the API base URL <b>including the {@code /v1} segment</b> (e.g. {@code https://api.openai.com/v1}).
+         * Request paths ({@code /chat/completions}, {@code /embeddings}) are appended without re-adding {@code /v1}. A
+         * trailing {@code /} is stripped.
+         */
         public Builder baseUrl(String baseUrl) {
             this.baseUrl = Objects.requireNonNull(baseUrl, "baseUrl");
             return this;
@@ -370,7 +571,11 @@ public final class OpenAiProvider implements ModelProvider {
             if (apiKey == null) {
                 throw new IllegalArgumentException("apiKey is required");
             }
-            return new OpenAiProvider(providerId, baseUrl, apiKey, defaultTimeout, httpClient);
+            String normalized = baseUrl;
+            while (normalized.endsWith("/")) {
+                normalized = normalized.substring(0, normalized.length() - 1);
+            }
+            return new OpenAiProvider(providerId, normalized, apiKey, defaultTimeout, httpClient);
         }
     }
 }
