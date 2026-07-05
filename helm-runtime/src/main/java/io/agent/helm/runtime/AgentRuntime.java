@@ -192,31 +192,37 @@ public final class AgentRuntime {
                 StringBuilder text = new StringBuilder();
                 CountDownLatch done = new CountDownLatch(1);
                 AtomicReference<Throwable> failure = new AtomicReference<>();
-                engine.runStream(engineRequest).subscribe(new Flow.Subscriber<>() {
-                    @Override
-                    public void onSubscribe(Flow.Subscription subscription) {
-                        subscription.request(Long.MAX_VALUE);
-                    }
+                AtomicReference<List<HelmMessage>> completedMessages = new AtomicReference<>();
+                AtomicReference<TokenUsage> completedUsage = new AtomicReference<>(new TokenUsage(0, 0));
+                engine.runStream(engineRequest, (msgs, usage) -> {
+                            completedMessages.set(msgs);
+                            completedUsage.set(usage);
+                        })
+                        .subscribe(new Flow.Subscriber<>() {
+                            @Override
+                            public void onSubscribe(Flow.Subscription subscription) {
+                                subscription.request(Long.MAX_VALUE);
+                            }
 
-                    @Override
-                    public void onNext(PromptStreamEvent event) {
-                        if (event instanceof PromptStreamEvent.ContentDelta delta) {
-                            text.append(delta.text());
-                        }
-                        pub.submit(event);
-                    }
+                            @Override
+                            public void onNext(PromptStreamEvent event) {
+                                if (event instanceof PromptStreamEvent.ContentDelta delta) {
+                                    text.append(delta.text());
+                                }
+                                pub.submit(event);
+                            }
 
-                    @Override
-                    public void onError(Throwable throwable) {
-                        failure.set(throwable);
-                        done.countDown();
-                    }
+                            @Override
+                            public void onError(Throwable throwable) {
+                                failure.set(throwable);
+                                done.countDown();
+                            }
 
-                    @Override
-                    public void onComplete() {
-                        done.countDown();
-                    }
-                });
+                            @Override
+                            public void onComplete() {
+                                done.countDown();
+                            }
+                        });
                 try {
                     done.await(DEFAULT_TIMEOUT.toMillis() * DEFAULT_MAX_TURNS + 1000, TimeUnit.MILLISECONDS);
                 } catch (InterruptedException e) {
@@ -229,8 +235,8 @@ public final class AgentRuntime {
                             ? runtimeException
                             : new RuntimeException(throwable);
                 }
-                List<HelmMessage> updated = new ArrayList<>(messages);
-                updated.add(HelmMessage.assistant(text.toString()));
+                List<HelmMessage> updated =
+                        completedMessages.get() != null ? completedMessages.get() : new ArrayList<>(messages);
                 store.saveSession(new AgentSessionState(
                         sessionId,
                         request.agentName(),
@@ -257,7 +263,7 @@ public final class AgentRuntime {
                         RuntimeEventType.OPERATION_SUCCEEDED,
                         Map.of("text", text.toString()));
                 pub.submit(
-                        new PromptStreamEvent.OperationCompleted(operationId, text.toString(), new TokenUsage(0, 0)));
+                        new PromptStreamEvent.OperationCompleted(operationId, text.toString(), completedUsage.get()));
                 pub.close();
             } catch (RuntimeException e) {
                 String code = (e instanceof io.agent.helm.core.error.HelmException he) ? he.code() : "INTERNAL_ERROR";

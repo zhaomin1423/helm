@@ -115,12 +115,13 @@ public final class AgentEngine {
      * incremental streaming surface; persistence of streamed sessions is the runtime's concern.
      */
     @io.agent.helm.core.annotation.Preview
-    public Flow.Publisher<PromptStreamEvent> runStream(AgentEngineRequest request) {
+    public Flow.Publisher<PromptStreamEvent> runStream(
+            AgentEngineRequest request, java.util.function.BiConsumer<List<HelmMessage>, TokenUsage> onComplete) {
         return subscriber -> {
             SubmissionPublisher<PromptStreamEvent> pub = new SubmissionPublisher<>();
             pub.subscribe(subscriber);
             try {
-                runStreamLoop(request, pub);
+                runStreamLoop(request, pub, onComplete);
                 pub.close();
             } catch (RuntimeException e) {
                 pub.closeExceptionally(e);
@@ -128,7 +129,15 @@ public final class AgentEngine {
         };
     }
 
-    private void runStreamLoop(AgentEngineRequest request, SubmissionPublisher<PromptStreamEvent> pub) {
+    /** Convenience overload without a completion callback. */
+    public Flow.Publisher<PromptStreamEvent> runStream(AgentEngineRequest request) {
+        return runStream(request, (messages, usage) -> {});
+    }
+
+    private void runStreamLoop(
+            AgentEngineRequest request,
+            SubmissionPublisher<PromptStreamEvent> pub,
+            java.util.function.BiConsumer<List<HelmMessage>, TokenUsage> onComplete) {
         EngineEventListener listener = request.listener();
         List<HelmMessage> messages = new ArrayList<>(request.messages());
         long inputTokens = 0;
@@ -211,6 +220,7 @@ public final class AgentEngine {
                 messages.add(HelmMessage.assistant(text.toString()));
                 listener.onEvent(new EngineEvent.TurnSucceeded(turn, usage));
                 pub.submit(new PromptStreamEvent.TurnEnded(turn, usage));
+                onComplete.accept(messages, new TokenUsage(inputTokens, outputTokens));
                 return;
             }
             for (ModelStreamEvent.ToolCallRequested toolCall : toolCalls) {
