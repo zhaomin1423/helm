@@ -51,12 +51,12 @@ final class AgentRuntimeTest {
         assertThat(runtime.getOperationEvents(result.operationId()))
                 .extracting(RuntimeEventRecord::type)
                 .containsExactly(
-                        RuntimeEventType.OPERATION_STARTED.type(),
-                        RuntimeEventType.TURN_STARTED.type(),
-                        RuntimeEventType.MODEL_STARTED.type(),
-                        RuntimeEventType.MODEL_SUCCEEDED.type(),
-                        RuntimeEventType.TURN_SUCCEEDED.type(),
-                        RuntimeEventType.OPERATION_SUCCEEDED.type());
+                        RuntimeEventType.OPERATION_STARTED,
+                        RuntimeEventType.TURN_STARTED,
+                        RuntimeEventType.MODEL_STARTED,
+                        RuntimeEventType.MODEL_SUCCEEDED,
+                        RuntimeEventType.TURN_SUCCEEDED,
+                        RuntimeEventType.OPERATION_SUCCEEDED);
     }
 
     @Test
@@ -124,12 +124,12 @@ final class AgentRuntimeTest {
         assertThat(runtime.getOperationEvents(handle.operationId()))
                 .extracting(RuntimeEventRecord::type)
                 .containsExactly(
-                        RuntimeEventType.OPERATION_STARTED.type(),
-                        RuntimeEventType.TURN_STARTED.type(),
-                        RuntimeEventType.MODEL_STARTED.type(),
-                        RuntimeEventType.MODEL_SUCCEEDED.type(),
-                        RuntimeEventType.TURN_SUCCEEDED.type(),
-                        RuntimeEventType.OPERATION_SUCCEEDED.type());
+                        RuntimeEventType.OPERATION_STARTED,
+                        RuntimeEventType.TURN_STARTED,
+                        RuntimeEventType.MODEL_STARTED,
+                        RuntimeEventType.MODEL_SUCCEEDED,
+                        RuntimeEventType.TURN_SUCCEEDED,
+                        RuntimeEventType.OPERATION_SUCCEEDED);
     }
 
     @Test
@@ -148,7 +148,7 @@ final class AgentRuntimeTest {
                 .isEqualTo(OperationStatus.FAILED);
         assertThat(runtime.getOperationEvents(handle.operationId()))
                 .extracting(RuntimeEventRecord::type)
-                .containsExactly(RuntimeEventType.OPERATION_STARTED.type(), RuntimeEventType.OPERATION_FAILED.type());
+                .containsExactly(RuntimeEventType.OPERATION_STARTED, RuntimeEventType.OPERATION_FAILED);
     }
 
     @Test

@@ -10,8 +10,10 @@ import io.agent.helm.core.agent.PromptResult;
 import io.agent.helm.core.agent.PromptStreamEvent;
 import io.agent.helm.core.error.AgentNotFoundException;
 import io.agent.helm.core.error.AuthorizationException;
+import io.agent.helm.core.error.HelmException;
 import io.agent.helm.core.error.RateLimitExceededException;
 import io.agent.helm.core.error.SessionBusyException;
+import io.agent.helm.core.error.SessionConflictException;
 import io.agent.helm.core.error.ToolExecutionException;
 import io.agent.helm.core.event.RuntimeEventRecord;
 import io.agent.helm.core.event.RuntimeEventType;
@@ -21,6 +23,7 @@ import io.agent.helm.core.message.HelmMessage;
 import io.agent.helm.core.message.Role;
 import io.agent.helm.core.model.ModelProvider;
 import io.agent.helm.core.model.TokenUsage;
+import io.agent.helm.core.sandbox.Sandbox;
 import io.agent.helm.core.security.AuthorizationResult;
 import io.agent.helm.core.security.HelmAction;
 import io.agent.helm.core.security.HelmAuthorizer;
@@ -34,6 +37,7 @@ import io.agent.helm.core.store.WorkQueue;
 import io.agent.helm.core.tool.Tool;
 import io.agent.helm.core.tool.ToolContext;
 import io.agent.helm.core.tool.ToolDescriptor;
+import io.agent.helm.core.tool.ToolLogger;
 import io.agent.helm.engine.AgentEngine;
 import io.agent.helm.engine.AgentEngineRequest;
 import io.agent.helm.engine.AgentEngineResult;
@@ -42,9 +46,11 @@ import io.agent.helm.engine.EngineEventListener;
 import io.agent.helm.engine.ToolExecutor;
 import io.agent.helm.runtime.durable.LeaseManager;
 import io.agent.helm.runtime.internal.EventRedactor;
+import io.agent.helm.runtime.internal.JsonCodec;
 import io.agent.helm.runtime.internal.ProviderRegistry;
 import io.agent.helm.runtime.internal.RuntimeErrorMapper;
 import io.agent.helm.runtime.memory.SaveMemoryTool;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -57,15 +63,19 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-public final class AgentRuntime {
+public final class AgentRuntime implements AutoCloseable {
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
     private static final int DEFAULT_MAX_TURNS = 8;
+    private static final int MAX_SESSION_CONFLICT_RETRIES = 1;
 
     private final Map<String, AgentDefinition> agents;
     private final ProviderRegistry providers;
@@ -75,11 +85,13 @@ public final class AgentRuntime {
     private final HelmAuthorizer authorizer;
     private final RateLimiter rateLimiter;
     private final HelmSecurityContext defaultSecurityContext;
-    private final java.util.concurrent.ExecutorService executor;
+    private final ExecutorService executor;
     private final WorkQueue workQueue;
     private final LeaseManager leaseManager;
+    private final ScheduledExecutorService leaseScheduler;
     private final AgentEngine engine = new AgentEngine();
     private final ConcurrentMap<String, Boolean> activeSessions = new ConcurrentHashMap<>();
+    private volatile boolean closed;
 
     private AgentRuntime(
             List<AgentDefinition> agents,
@@ -90,7 +102,7 @@ public final class AgentRuntime {
             HelmAuthorizer authorizer,
             RateLimiter rateLimiter,
             HelmSecurityContext defaultSecurityContext,
-            java.util.concurrent.ExecutorService executor,
+            ExecutorService executor,
             WorkQueue workQueue) {
         Map<String, AgentDefinition> agentMap = new LinkedHashMap<>();
         for (AgentDefinition agent : agents) {
@@ -108,13 +120,12 @@ public final class AgentRuntime {
         this.executor = executor;
         this.workQueue = workQueue;
         if (executor != null && workQueue != null) {
-            this.leaseManager = new LeaseManager(
-                    workQueue,
-                    java.util.concurrent.Executors.newSingleThreadScheduledExecutor(),
-                    Duration.ofSeconds(10),
-                    this::recoverOperation);
+            this.leaseScheduler = Executors.newSingleThreadScheduledExecutor();
+            this.leaseManager =
+                    new LeaseManager(workQueue, leaseScheduler, Duration.ofSeconds(10), this::recoverOperation);
             this.leaseManager.start();
         } else {
+            this.leaseScheduler = null;
             this.leaseManager = null;
         }
     }
@@ -147,22 +158,25 @@ public final class AgentRuntime {
             String operationId = "op_" + UUID.randomUUID();
             String sessionId = sessionId(request.agentName(), request.instanceId(), request.sessionName());
             AtomicInteger eventSequence = new AtomicInteger(0);
+            Instant start = Instant.now();
+            // Acquire the session lock BEFORE the try block so the finally clause only releases when this call
+            // actually acquired the entry (mirrors executePrompt). A busy session throws without touching the map.
+            if (activeSessions.putIfAbsent(sessionId, Boolean.TRUE) != null) {
+                throw new SessionBusyException("Session is busy", Map.of("sessionId", sessionId), Map.of());
+            }
+            AtomicReference<Flow.Subscription> subscriptionRef = new AtomicReference<>();
             try {
                 authorize(defaultSecurityContext, HelmAction.PROMPT, HelmResource.of("AGENT", request.agentName()));
                 acquireRate(RateLimitKey.principal(defaultSecurityContext.principal()));
-                if (activeSessions.putIfAbsent(sessionId, Boolean.TRUE) != null) {
-                    throw new SessionBusyException("Session is busy", Map.of("sessionId", sessionId), Map.of());
-                }
-                Instant now = Instant.now();
                 store.saveOperation(new OperationRecord(
                         operationId,
                         sessionId,
-                        "PROMPT",
+                        HelmAction.PROMPT,
                         OperationStatus.RUNNING,
-                        request.text(),
+                        JsonCodec.encodeRequest(request),
                         null,
                         Map.of(),
-                        now,
+                        start,
                         null));
                 appendEvent(
                         operationId,
@@ -181,8 +195,8 @@ public final class AgentRuntime {
                                 request.sessionName(),
                                 0,
                                 List.of(),
-                                now,
-                                now));
+                                start,
+                                start));
                 List<HelmMessage> messages = new ArrayList<>(current.messages());
                 messages.add(HelmMessage.user(request.text()));
                 messages = trimHistory(messages);
@@ -197,7 +211,7 @@ public final class AgentRuntime {
                         toolDescriptors,
                         messages,
                         provider,
-                        toolExecutor(tools, operationId),
+                        toolExecutor(tools, operationId, defaultSecurityContext, config.sandbox()),
                         DEFAULT_TIMEOUT,
                         DEFAULT_MAX_TURNS,
                         buildEngineListener(operationId, eventSequence));
@@ -213,6 +227,7 @@ public final class AgentRuntime {
                         .subscribe(new Flow.Subscriber<>() {
                             @Override
                             public void onSubscribe(Flow.Subscription subscription) {
+                                subscriptionRef.set(subscription);
                                 subscription.request(Long.MAX_VALUE);
                             }
 
@@ -235,11 +250,23 @@ public final class AgentRuntime {
                                 done.countDown();
                             }
                         });
+                long streamTimeoutMs = DEFAULT_TIMEOUT.toMillis() * DEFAULT_MAX_TURNS + 1000;
+                boolean completed;
                 try {
-                    done.await(DEFAULT_TIMEOUT.toMillis() * DEFAULT_MAX_TURNS + 1000, TimeUnit.MILLISECONDS);
+                    completed = done.await(streamTimeoutMs, TimeUnit.MILLISECONDS);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while streaming prompt", e);
+                    cancelSubscription(subscriptionRef);
+                    throw new io.agent.helm.core.error.EngineInterruptedException(
+                            "Interrupted while streaming prompt", Map.of(), Map.of());
+                }
+                if (!completed) {
+                    // Stream timed out — cancel the in-flight subscription and treat as a failure.
+                    cancelSubscription(subscriptionRef);
+                    throw new io.agent.helm.core.error.TurnTimeoutException(
+                            "Prompt stream timed out after " + streamTimeoutMs + "ms",
+                            Map.of("timeoutMs", streamTimeoutMs),
+                            Map.of());
                 }
                 Throwable throwable = failure.get();
                 if (throwable != null) {
@@ -249,24 +276,16 @@ public final class AgentRuntime {
                 }
                 List<HelmMessage> updated =
                         completedMessages.get() != null ? completedMessages.get() : new ArrayList<>(messages);
-                store.saveSession(new AgentSessionState(
-                        sessionId,
-                        request.agentName(),
-                        request.instanceId(),
-                        request.sessionName(),
-                        current.version() + 1,
-                        updated,
-                        current.createdAt(),
-                        Instant.now()));
+                saveSessionWithRetry(sessionId, request, current, updated, start);
                 store.saveOperation(new OperationRecord(
                         operationId,
                         sessionId,
-                        "PROMPT",
+                        HelmAction.PROMPT,
                         OperationStatus.SUCCEEDED,
-                        request.text(),
+                        JsonCodec.encodeRequest(request),
                         text.toString(),
                         Map.of(),
-                        now,
+                        start,
                         Instant.now()));
                 appendEventSafely(
                         operationId,
@@ -278,17 +297,17 @@ public final class AgentRuntime {
                         new PromptStreamEvent.OperationCompleted(operationId, text.toString(), completedUsage.get()));
                 pub.close();
             } catch (RuntimeException e) {
-                String code = (e instanceof io.agent.helm.core.error.HelmException he) ? he.code() : "INTERNAL_ERROR";
+                String code = (e instanceof HelmException he) ? he.code() : "INTERNAL_ERROR";
                 Map<String, Object> error = RuntimeErrorMapper.operationError(e);
                 store.saveOperation(new OperationRecord(
                         operationId,
                         sessionId,
-                        "PROMPT",
+                        HelmAction.PROMPT,
                         OperationStatus.FAILED,
-                        request.text(),
+                        JsonCodec.encodeRequest(request),
                         null,
                         error,
-                        Instant.now(),
+                        start,
                         Instant.now()));
                 appendEventSafely(
                         operationId, null, eventSequence.incrementAndGet(), RuntimeEventType.OPERATION_FAILED, error);
@@ -321,20 +340,38 @@ public final class AgentRuntime {
     private OperationHandle dispatchDurable(AgentPromptRequest request, String operationId) {
         String sessionId = sessionId(request.agentName(), request.instanceId(), request.sessionName());
         Instant now = Instant.now();
+        // Store the JSON-encoded request in input so recovery can reconstruct the request without parsing sessionId.
         store.saveOperation(new OperationRecord(
-                operationId, sessionId, "PROMPT", OperationStatus.QUEUED, request.text(), null, Map.of(), now, null));
+                operationId,
+                sessionId,
+                HelmAction.PROMPT,
+                OperationStatus.QUEUED,
+                JsonCodec.encodeRequest(request),
+                null,
+                Map.of(),
+                now,
+                null));
         if (workQueue != null) {
             workQueue.enqueue(operationId, sessionId);
         }
         executor.execute(() -> processOperation(request, operationId));
-        return new OperationHandle(operationId, OperationStatus.QUEUED);
+        // Best-effort: report QUEUED; the operation may already have transitioned if the executor runs synchronously.
+        OperationStatus current =
+                store.loadOperation(operationId).map(OperationRecord::status).orElse(OperationStatus.QUEUED);
+        return new OperationHandle(operationId, current);
     }
 
     private void processOperation(AgentPromptRequest request, String operationId) {
-        var claimed = workQueue != null
-                ? workQueue.claim("worker", Duration.ofSeconds(60))
-                : java.util.Optional.<WorkQueue.QueueItem>empty();
-        String leaseId = claimed.map(WorkQueue.QueueItem::leaseId).orElse(operationId);
+        String leaseId = operationId;
+        if (workQueue != null) {
+            Optional<WorkQueue.QueueItem> claimed = workQueue.claim(operationId, "worker", Duration.ofSeconds(60));
+            if (claimed.isEmpty()) {
+                // Nothing to claim for this operation — another worker may have already processed it. Abort without
+                // executing the prompt.
+                return;
+            }
+            leaseId = claimed.get().leaseId();
+        }
         try {
             executePrompt(request, operationId, defaultSecurityContext);
             if (workQueue != null) {
@@ -347,15 +384,15 @@ public final class AgentRuntime {
         }
     }
 
-    /** Recovery: re-dispatch an operation whose lease expired. */
+    /** Recovery: re-dispatch an operation whose lease expired. Skips terminal-status operations for idempotency. */
     private void recoverOperation(String operationId) {
         store.loadOperation(operationId).ifPresent(op -> {
-            String[] parts = op.sessionId().split(":", 3);
-            if (parts.length == 3) {
-                AgentPromptRequest request =
-                        new AgentPromptRequest(parts[0], parts[1], parts[2], String.valueOf(op.input()));
-                executor.execute(() -> processOperation(request, operationId));
+            if (op.status().isTerminal()) {
+                // Already completed — do not re-execute (idempotency).
+                return;
             }
+            AgentPromptRequest request = JsonCodec.decodeRequest(op.input());
+            executor.execute(() -> processOperation(request, operationId));
         });
     }
 
@@ -400,19 +437,19 @@ public final class AgentRuntime {
         if (activeSessions.putIfAbsent(sessionId, Boolean.TRUE) != null) {
             throw new SessionBusyException("Session is busy", Map.of("sessionId", sessionId), Map.of());
         }
-        Instant now = Instant.now();
+        Instant start = Instant.now();
         AtomicInteger eventSequence = new AtomicInteger(0);
 
         try {
             store.saveOperation(new OperationRecord(
                     operationId,
                     sessionId,
-                    "PROMPT",
+                    HelmAction.PROMPT,
                     OperationStatus.RUNNING,
-                    request.text(),
+                    JsonCodec.encodeRequest(request),
                     null,
                     Map.of(),
-                    now,
+                    start,
                     null));
             appendEvent(
                     operationId,
@@ -421,8 +458,8 @@ public final class AgentRuntime {
                     RuntimeEventType.OPERATION_STARTED,
                     Map.of("text", String.valueOf(request.text())));
 
-            AgentDefinition agent = agent(request.agentName());
-            AgentConfig config = agent.configure(new AgentContext(request.agentName(), request.instanceId()));
+            AgentDefinition agentDef = agent(request.agentName());
+            AgentConfig config = agentDef.configure(new AgentContext(request.agentName(), request.instanceId()));
             ModelProvider provider = providers.resolve(config.model());
 
             AgentSessionState current = store.loadSession(sessionId)
@@ -433,23 +470,12 @@ public final class AgentRuntime {
                             request.sessionName(),
                             0,
                             List.of(),
-                            now,
-                            now));
+                            start,
+                            start));
 
             List<HelmMessage> messages = new ArrayList<>(current.messages());
             messages.add(HelmMessage.user(request.text()));
             messages = trimHistory(messages);
-            AgentSessionState running = new AgentSessionState(
-                    sessionId,
-                    request.agentName(),
-                    request.instanceId(),
-                    request.sessionName(),
-                    current.version() + 1,
-                    messages,
-                    current.createdAt(),
-                    now);
-            store.saveSession(running);
-
             String scopeId = memoryScopeId(request.agentName(), request.instanceId());
             List<Tool<?, ?>> tools = effectiveTools(config, scopeId);
             String instructions = instructionsWithMemories(config.instructions(), scopeId);
@@ -461,30 +487,22 @@ public final class AgentRuntime {
                     toolDescriptors,
                     messages,
                     provider,
-                    toolExecutor(tools, operationId),
+                    toolExecutor(tools, operationId, securityContext, config.sandbox()),
                     DEFAULT_TIMEOUT,
                     DEFAULT_MAX_TURNS,
                     buildEngineListener(operationId, eventSequence)));
 
-            AgentSessionState updated = new AgentSessionState(
-                    sessionId,
-                    request.agentName(),
-                    request.instanceId(),
-                    request.sessionName(),
-                    running.version(),
-                    result.messages(),
-                    running.createdAt(),
-                    Instant.now());
-            store.saveSession(updated);
+            // Defer session save until the engine has produced output. On SessionConflict, reload + retry once.
+            saveSessionWithRetry(sessionId, request, current, result.messages(), start);
             store.saveOperation(new OperationRecord(
                     operationId,
                     sessionId,
-                    "PROMPT",
+                    HelmAction.PROMPT,
                     OperationStatus.SUCCEEDED,
-                    request.text(),
+                    JsonCodec.encodeRequest(request),
                     result.text(),
                     Map.of(),
-                    now,
+                    start,
                     Instant.now()));
             appendEventSafely(
                     operationId,
@@ -498,12 +516,12 @@ public final class AgentRuntime {
             store.saveOperation(new OperationRecord(
                     operationId,
                     sessionId,
-                    "PROMPT",
+                    HelmAction.PROMPT,
                     OperationStatus.FAILED,
-                    request.text(),
+                    JsonCodec.encodeRequest(request),
                     null,
                     error,
-                    now,
+                    start,
                     Instant.now()));
             appendEventSafely(
                     operationId, null, eventSequence.incrementAndGet(), RuntimeEventType.OPERATION_FAILED, error);
@@ -513,16 +531,67 @@ public final class AgentRuntime {
         }
     }
 
-    private AgentDefinition agent(String name) {
-        AgentDefinition agent = agents.get(name);
-        if (agent == null) {
-            throw new AgentNotFoundException("No agent named " + name, Map.of("agent", name), Map.of());
+    /**
+     * Saves the session with optimistic-concurrency retry. On {@link SessionConflictException}, reloads the current
+     * state and retries the save once with the reloaded version. The engine's output messages are re-applied on top of
+     * the reloaded state so concurrent version bumps (e.g. a workflow writing to the same session) do not silently lose
+     * messages.
+     */
+    private void saveSessionWithRetry(
+            String sessionId,
+            AgentPromptRequest request,
+            AgentSessionState loaded,
+            List<HelmMessage> updatedMessages,
+            Instant createdAt) {
+        AgentSessionState base = loaded;
+        List<HelmMessage> messages = updatedMessages;
+        for (int attempt = 0; attempt <= MAX_SESSION_CONFLICT_RETRIES; attempt++) {
+            try {
+                AgentSessionState updated = new AgentSessionState(
+                        sessionId,
+                        request.agentName(),
+                        request.instanceId(),
+                        request.sessionName(),
+                        base.version() + 1,
+                        messages,
+                        base.createdAt(),
+                        Instant.now());
+                store.saveSession(updated);
+                return;
+            } catch (SessionConflictException conflict) {
+                if (attempt == MAX_SESSION_CONFLICT_RETRIES) {
+                    throw conflict;
+                }
+                // Reload the latest persisted state and re-apply the engine's new messages on top of it. The engine's
+                // output messages (assistant + tool results) follow the original input messages; we rebuild by taking
+                // the reloaded history + user message + the engine's additions beyond the original input size.
+                AgentSessionState reloaded = store.loadSession(sessionId).orElseThrow(() -> conflict);
+                List<HelmMessage> reconciled = new ArrayList<>(reloaded.messages());
+                reconciled.add(HelmMessage.user(request.text()));
+                reconciled = trimHistory(reconciled);
+                // Append engine-produced messages (everything after the original input the engine saw).
+                int originalInputSize = loaded.messages().size() + 1; // +1 for the user message
+                if (updatedMessages.size() > originalInputSize) {
+                    reconciled.addAll(updatedMessages.subList(originalInputSize, updatedMessages.size()));
+                }
+                base = reloaded;
+                messages = trimHistory(reconciled);
+            }
         }
-        return agent;
     }
 
-    private ToolExecutor toolExecutor(List<Tool<?, ?>> tools, String operationId) {
-        return (ignoredOperationId, name, input) -> executeTool(tools, operationId, name, input);
+    private AgentDefinition agent(String name) {
+        AgentDefinition agentDef = agents.get(name);
+        if (agentDef == null) {
+            throw new AgentNotFoundException("No agent named " + name, Map.of("agent", name), Map.of());
+        }
+        return agentDef;
+    }
+
+    private ToolExecutor toolExecutor(
+            List<Tool<?, ?>> tools, String operationId, HelmSecurityContext securityContext, Sandbox sandbox) {
+        return (ignoredOperationId, name, input) ->
+                executeTool(tools, operationId, name, input, securityContext, sandbox);
     }
 
     /** Combines agent-defined tools with the built-in memory tool when a memory store is configured. */
@@ -577,33 +646,45 @@ public final class AgentRuntime {
         return new ArrayList<>(window);
     }
 
-    private Object executeTool(List<Tool<?, ?>> tools, String operationId, String name, Object input) {
+    private Object executeTool(
+            List<Tool<?, ?>> tools,
+            String operationId,
+            String name,
+            Object input,
+            HelmSecurityContext securityContext,
+            Sandbox sandbox) {
         Tool<?, ?> tool = tools.stream()
                 .filter(candidate -> candidate.name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> ToolExecutionException.notFound(name));
 
         try {
-            return executeUnchecked(tool, operationId, input);
+            return executeUnchecked(tool, operationId, input, securityContext, sandbox);
         } catch (ToolExecutionException e) {
             throw e;
         } catch (RuntimeException e) {
             throw new ToolExecutionException(
                     "Tool execution failed",
                     Map.of("tool", name, "operationId", operationId, "message", messageOf(e)),
-                    Map.of());
+                    Map.of(),
+                    e);
         } catch (Exception e) {
             throw new ToolExecutionException(
                     "Tool execution failed",
                     Map.of("tool", name, "operationId", operationId, "message", messageOf(e)),
-                    Map.of());
+                    Map.of(),
+                    e);
         }
     }
 
     @SuppressWarnings("unchecked")
-    private static <I, O> O executeUnchecked(Tool<?, ?> tool, String operationId, Object input) throws Exception {
+    private <I, O> O executeUnchecked(
+            Tool<?, ?> tool, String operationId, Object input, HelmSecurityContext securityContext, Sandbox sandbox)
+            throws Exception {
         Tool<I, O> typedTool = (Tool<I, O>) tool;
-        return typedTool.execute(new ToolContext(operationId), (I) input);
+        return typedTool.execute(
+                new ToolContext(operationId, securityContext, sandbox, Clock.systemUTC(), ToolLogger.noop()),
+                (I) input);
     }
 
     private void appendEvent(
@@ -617,7 +698,7 @@ public final class AgentRuntime {
                 operationId,
                 workflowRunId,
                 sequence,
-                type.type(),
+                type,
                 EventRedactor.redact(payload),
                 Instant.now()));
     }
@@ -723,6 +804,13 @@ public final class AgentRuntime {
         }
     }
 
+    private static void cancelSubscription(AtomicReference<Flow.Subscription> subscriptionRef) {
+        Flow.Subscription current = subscriptionRef.getAndSet(null);
+        if (current != null) {
+            current.cancel();
+        }
+    }
+
     private static String sessionId(String agentName, String instanceId, String sessionName) {
         return agentName + ":" + instanceId + ":" + sessionName;
     }
@@ -737,6 +825,21 @@ public final class AgentRuntime {
 
     private record PromptExecution(String operationId, String text) {}
 
+    /**
+     * Closes the runtime: stops the lease manager (if any) and shuts down its internal scheduler. The user-provided
+     * executor is NOT shut down (not owned by the runtime). Idempotent.
+     */
+    @Override
+    public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        if (leaseManager != null) {
+            leaseManager.close();
+        }
+    }
+
     public static final class Builder {
         private final List<AgentDefinition> agents = new ArrayList<>();
         private final List<ModelProvider> providers = new ArrayList<>();
@@ -746,7 +849,7 @@ public final class AgentRuntime {
         private HelmAuthorizer authorizer;
         private RateLimiter rateLimiter;
         private HelmSecurityContext defaultSecurityContext;
-        private java.util.concurrent.ExecutorService executor;
+        private ExecutorService executor;
         private WorkQueue workQueue;
 
         public Builder agent(AgentDefinition agent) {
@@ -803,9 +906,16 @@ public final class AgentRuntime {
             return this;
         }
 
-        /** Enables durable async dispatch: operations are enqueued and executed on the executor. @Preview */
+        /**
+         * Enables durable async dispatch: operations are enqueued and executed on the executor. @Preview
+         *
+         * <p>Callers should supply a single-threaded executor (or serialize per-session dispatch) to avoid
+         * {@link SessionBusyException} when multiple operations target the same session concurrently — the session lock
+         * is held for the duration of each prompt, so a second dispatch for the same session will fail if the first is
+         * still in-flight on another thread.
+         */
         @io.agent.helm.core.annotation.Preview
-        public Builder durable(java.util.concurrent.ExecutorService executor, WorkQueue workQueue) {
+        public Builder durable(ExecutorService executor, WorkQueue workQueue) {
             this.executor = Objects.requireNonNull(executor, "executor");
             this.workQueue = Objects.requireNonNull(workQueue, "workQueue");
             return this;

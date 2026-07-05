@@ -7,15 +7,20 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class EventRedactor {
+    /** Maximum nesting depth before the redactor flattens remaining values to a placeholder. */
+    private static final int MAX_DEPTH = 32;
+
+    private static final String DEPTH_EXCEEDED_PLACEHOLDER = "[NESTED_TOO_DEEP]";
+
     private EventRedactor() {}
 
     public static Map<String, Object> redact(Map<String, Object> payload) {
         Map<String, Object> redacted = new LinkedHashMap<>();
-        payload.forEach((key, value) -> redactEntry(redacted, String.valueOf(key), value));
+        payload.forEach((key, value) -> redactEntry(redacted, String.valueOf(key), value, 0));
         return Map.copyOf(redacted);
     }
 
-    private static void redactEntry(Map<String, Object> target, String key, Object value) {
+    private static void redactEntry(Map<String, Object> target, String key, Object value, int depth) {
         if (isDeveloperDetails(key)) {
             return;
         }
@@ -23,19 +28,23 @@ public final class EventRedactor {
             target.put(key, "[REDACTED]");
             return;
         }
-        target.put(key, redactValue(value));
+        target.put(key, redactValue(value, depth));
     }
 
-    private static Object redactValue(Object value) {
+    private static Object redactValue(Object value, int depth) {
+        if (depth >= MAX_DEPTH) {
+            return DEPTH_EXCEEDED_PLACEHOLDER;
+        }
         if (value instanceof Map<?, ?> map) {
             Map<String, Object> nested = new LinkedHashMap<>();
-            map.forEach((nestedKey, nestedValue) -> redactEntry(nested, String.valueOf(nestedKey), nestedValue));
+            map.forEach(
+                    (nestedKey, nestedValue) -> redactEntry(nested, String.valueOf(nestedKey), nestedValue, depth + 1));
             return Map.copyOf(nested);
         }
         if (value instanceof List<?> list) {
             List<Object> redacted = new ArrayList<>(list.size());
             for (Object item : list) {
-                redacted.add(redactValue(item));
+                redacted.add(redactValue(item, depth + 1));
             }
             return List.copyOf(redacted);
         }

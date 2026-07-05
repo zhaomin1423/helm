@@ -18,6 +18,7 @@ import io.agent.helm.core.type.TypeDescriptor;
 import io.agent.helm.core.workflow.WorkflowConfig;
 import io.agent.helm.core.workflow.WorkflowContext;
 import io.agent.helm.core.workflow.WorkflowDefinition;
+import io.agent.helm.runtime.internal.JsonCodec;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -45,12 +46,13 @@ final class WorkflowRuntimeTest {
         assertThat(runtime.getRun(handle.runId()))
                 .isPresent()
                 .get()
-                .extracting(WorkflowRunRecord::status, WorkflowRunRecord::output)
-                .containsExactly(WorkflowRunStatus.SUCCEEDED, handle.result());
+                .extracting(WorkflowRunRecord::status)
+                .isEqualTo(WorkflowRunStatus.SUCCEEDED);
+        assertThat(runtime.getRun(handle.runId()).orElseThrow().output()).isEqualTo(JsonCodec.encode(handle.result()));
         assertThat(runtime.listRuns()).extracting(WorkflowRunRecord::id).containsExactly(handle.runId());
         assertThat(runtime.getRunEvents(handle.runId()))
                 .extracting(RuntimeEventRecord::type)
-                .containsExactly(RuntimeEventType.WORKFLOW_STARTED.type(), RuntimeEventType.WORKFLOW_SUCCEEDED.type());
+                .containsExactly(RuntimeEventType.WORKFLOW_STARTED, RuntimeEventType.WORKFLOW_SUCCEEDED);
     }
 
     @Test
@@ -71,8 +73,8 @@ final class WorkflowRuntimeTest {
                 .build();
 
         assertThatThrownBy(() -> runtime.invoke(new WorkflowInvokeRequest<>("broken", new Input("long text"))))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Workflow failed");
+                .isInstanceOf(SessionBusyException.class)
+                .hasMessageContaining("config boom");
 
         WorkflowRunRecord run = runtime.listRuns().stream()
                 .filter(record -> record.status() == WorkflowRunStatus.FAILED)
@@ -95,8 +97,8 @@ final class WorkflowRuntimeTest {
                 .build();
 
         assertThatThrownBy(() -> runtime.invoke(new WorkflowInvokeRequest<>("secret", new Input("long text"))))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Workflow failed");
+                .isInstanceOf(SessionBusyException.class)
+                .hasMessageContaining("config boom");
 
         WorkflowRunRecord run = runtime.listRuns().stream()
                 .filter(record -> record.status() == WorkflowRunStatus.FAILED)
@@ -116,9 +118,9 @@ final class WorkflowRuntimeTest {
         var events = runtime.getRunEvents(run.id());
         assertThat(events)
                 .extracting(RuntimeEventRecord::type)
-                .containsExactly(RuntimeEventType.WORKFLOW_STARTED.type(), RuntimeEventType.WORKFLOW_FAILED.type());
+                .containsExactly(RuntimeEventType.WORKFLOW_STARTED, RuntimeEventType.WORKFLOW_FAILED);
         var failedEvent = events.stream()
-                .filter(event -> event.type().equals(RuntimeEventType.WORKFLOW_FAILED.type()))
+                .filter(event -> event.type().equals(RuntimeEventType.WORKFLOW_FAILED))
                 .findFirst()
                 .orElseThrow();
         assertThat(failedEvent.payload())

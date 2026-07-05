@@ -3,6 +3,7 @@ package io.agent.helm.engine;
 import io.agent.helm.core.agent.PromptStreamEvent;
 import io.agent.helm.core.error.EngineException;
 import io.agent.helm.core.error.EngineInterruptedException;
+import io.agent.helm.core.error.ErrorCode;
 import io.agent.helm.core.error.MaxTurnsExceededException;
 import io.agent.helm.core.error.ModelStreamException;
 import io.agent.helm.core.error.ToolExecutionException;
@@ -87,7 +88,8 @@ public final class AgentEngine {
                         throw new ToolExecutionException(
                                 "Tool execution failed",
                                 Map.of("tool", toolCall.name(), "operationId", "engine", "message", message),
-                                Map.of());
+                                Map.of(),
+                                exception);
                     }
                 }
                 listener.onEvent(new EngineEvent.TurnSucceeded(turn, result.usage()));
@@ -144,98 +146,137 @@ public final class AgentEngine {
         long outputTokens = 0;
         for (int turn = 0; turn < request.maxTurns(); turn++) {
             listener.onEvent(new EngineEvent.TurnStarted(turn));
-            listener.onEvent(new EngineEvent.ModelStarted(turn));
-            StringBuilder text = new StringBuilder();
-            List<ModelStreamEvent.ToolCallRequested> toolCalls = new ArrayList<>();
-            AtomicReference<TokenUsage> usageRef = new AtomicReference<>(new TokenUsage(0, 0));
-            CountDownLatch done = new CountDownLatch(1);
-            AtomicReference<Throwable> failure = new AtomicReference<>();
-            AtomicReference<Flow.Subscription> subRef = new AtomicReference<>();
-            request.provider().stream(new ModelRequest(
-                            request.model(), request.instructions(), request.tools(), messages, request.timeout()))
-                    .subscribe(new Flow.Subscriber<>() {
-                        @Override
-                        public void onSubscribe(Flow.Subscription subscription) {
-                            subRef.set(subscription);
-                            subscription.request(1);
-                        }
-
-                        @Override
-                        public void onNext(ModelStreamEvent event) {
-                            Flow.Subscription current = subRef.get();
-                            if (current == null) {
-                                return;
-                            }
-                            if (event instanceof ModelStreamEvent.ContentDelta delta) {
-                                text.append(delta.text());
-                                pub.submit(new PromptStreamEvent.ContentDelta(delta.text()));
-                            } else if (event instanceof ModelStreamEvent.ToolCallRequested toolCall) {
-                                toolCalls.add(toolCall);
-                                pub.submit(new PromptStreamEvent.ToolCallRequested(
-                                        toolCall.id(), toolCall.name(), toolCall.input()));
-                            } else if (event instanceof ModelStreamEvent.Completed completed) {
-                                usageRef.set(completed.usage());
-                            }
-                            current.request(1);
-                        }
-
-                        @Override
-                        public void onError(Throwable throwable) {
-                            failure.compareAndSet(null, throwable);
-                            done.countDown();
-                        }
-
-                        @Override
-                        public void onComplete() {
-                            done.countDown();
-                        }
-                    });
             try {
-                if (!done.await(request.timeout().toMillis(), TimeUnit.MILLISECONDS)) {
+                listener.onEvent(new EngineEvent.ModelStarted(turn));
+                StringBuilder text = new StringBuilder();
+                List<ModelStreamEvent.ToolCallRequested> toolCalls = new ArrayList<>();
+                AtomicReference<TokenUsage> usageRef = new AtomicReference<>(new TokenUsage(0, 0));
+                CountDownLatch done = new CountDownLatch(1);
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                AtomicReference<Flow.Subscription> subRef = new AtomicReference<>();
+                request.provider().stream(new ModelRequest(
+                                request.model(), request.instructions(), request.tools(), messages, request.timeout()))
+                        .subscribe(new Flow.Subscriber<>() {
+                            @Override
+                            public void onSubscribe(Flow.Subscription subscription) {
+                                subRef.set(subscription);
+                                subscription.request(1);
+                            }
+
+                            @Override
+                            public void onNext(ModelStreamEvent event) {
+                                Flow.Subscription current = subRef.get();
+                                if (current == null) {
+                                    return;
+                                }
+                                if (event instanceof ModelStreamEvent.ContentDelta delta) {
+                                    text.append(delta.text());
+                                    pub.submit(new PromptStreamEvent.ContentDelta(delta.text()));
+                                } else if (event instanceof ModelStreamEvent.ToolCallRequested toolCall) {
+                                    toolCalls.add(toolCall);
+                                    pub.submit(new PromptStreamEvent.ToolCallRequested(
+                                            toolCall.id(), toolCall.name(), toolCall.input()));
+                                } else if (event instanceof ModelStreamEvent.Completed completed) {
+                                    usageRef.set(completed.usage());
+                                }
+                                current.request(1);
+                            }
+
+                            @Override
+                            public void onError(Throwable throwable) {
+                                failure.compareAndSet(null, throwable);
+                                done.countDown();
+                            }
+
+                            @Override
+                            public void onComplete() {
+                                done.countDown();
+                            }
+                        });
+                try {
+                    if (!done.await(request.timeout().toMillis(), TimeUnit.MILLISECONDS)) {
+                        cancelSubscription(subRef);
+                        throw new TurnTimeoutException(
+                                "Model stream timed out after " + request.timeout(),
+                                Map.of("timeout", String.valueOf(request.timeout())),
+                                Map.of());
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     cancelSubscription(subRef);
-                    throw new TurnTimeoutException(
-                            "Model stream timed out after " + request.timeout(),
-                            Map.of("timeout", String.valueOf(request.timeout())),
-                            Map.of());
+                    throw new EngineInterruptedException(
+                            "Interrupted while waiting for model stream", Map.of(), Map.of());
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                cancelSubscription(subRef);
-                throw new EngineInterruptedException("Interrupted while waiting for model stream", Map.of(), Map.of());
-            }
-            Throwable throwable = failure.get();
-            if (throwable != null) {
-                if (throwable instanceof io.agent.helm.core.error.HelmException helmException) {
-                    throw helmException;
+                Throwable throwable = failure.get();
+                if (throwable != null) {
+                    String reason = throwable.getMessage() == null
+                            ? throwable.getClass().getSimpleName()
+                            : throwable.getMessage();
+                    String code = throwable instanceof io.agent.helm.core.error.HelmException helmException
+                            ? helmException.code()
+                            : ErrorCode.MODEL_STREAM_FAILED.stable();
+                    listener.onEvent(new EngineEvent.ModelFailed(turn, code, reason));
+                    if (throwable instanceof io.agent.helm.core.error.HelmException helmException) {
+                        throw helmException;
+                    }
+                    throw new ModelStreamException(
+                            "Model stream failed: " + reason, Map.of(), Map.of("cause", reason), throwable);
                 }
-                String reason =
-                        throwable.getMessage() == null ? throwable.getClass().getSimpleName() : throwable.getMessage();
-                throw new ModelStreamException("Model stream failed: " + reason, Map.of(), Map.of("cause", reason));
-            }
-            TokenUsage usage = usageRef.get();
-            inputTokens += usage.inputTokens();
-            outputTokens += usage.outputTokens();
-            listener.onEvent(new EngineEvent.ModelSucceeded(turn, usage));
-            if (toolCalls.isEmpty()) {
-                messages.add(HelmMessage.assistant(text.toString()));
+                TokenUsage usage = usageRef.get();
+                inputTokens += usage.inputTokens();
+                outputTokens += usage.outputTokens();
+                listener.onEvent(new EngineEvent.ModelSucceeded(turn, usage));
+                if (toolCalls.isEmpty()) {
+                    messages.add(HelmMessage.assistant(text.toString()));
+                    listener.onEvent(new EngineEvent.TurnSucceeded(turn, usage));
+                    pub.submit(new PromptStreamEvent.TurnEnded(turn, usage));
+                    onComplete.accept(messages, new TokenUsage(inputTokens, outputTokens));
+                    return;
+                }
+                for (ModelStreamEvent.ToolCallRequested toolCall : toolCalls) {
+                    listener.onEvent(new EngineEvent.ToolStarted(turn, toolCall.name(), toolCall.id()));
+                    try {
+                        validateToolInput(request.tools(), toolCall);
+                        messages.add(new HelmMessage(
+                                Role.ASSISTANT,
+                                List.of(new ToolCallBlock(toolCall.id(), toolCall.name(), toolCall.input()))));
+                        Object output = request.toolExecutor().execute("engine", toolCall.name(), toolCall.input());
+                        validateToolOutput(toolCall.name(), output);
+                        messages.add(
+                                new HelmMessage(Role.TOOL, List.of(new ToolResultBlock(toolCall.id(), output, false))));
+                        pub.submit(new PromptStreamEvent.ToolResultReady(toolCall.id(), toolCall.name(), output));
+                        listener.onEvent(new EngineEvent.ToolSucceeded(turn, toolCall.name(), toolCall.id()));
+                    } catch (ToolExecutionException toolException) {
+                        listener.onEvent(new EngineEvent.ToolFailed(
+                                turn,
+                                toolCall.name(),
+                                toolCall.id(),
+                                toolException.code(),
+                                toolException.getMessage()));
+                        throw toolException;
+                    } catch (Exception exception) {
+                        String message = exception.getMessage() == null
+                                ? exception.getClass().getSimpleName()
+                                : exception.getMessage();
+                        listener.onEvent(new EngineEvent.ToolFailed(
+                                turn, toolCall.name(), toolCall.id(), "TOOL_EXECUTION_FAILED", message));
+                        throw new ToolExecutionException(
+                                "Tool execution failed",
+                                Map.of("tool", toolCall.name(), "operationId", "engine", "message", message),
+                                Map.of(),
+                                exception);
+                    }
+                }
                 listener.onEvent(new EngineEvent.TurnSucceeded(turn, usage));
                 pub.submit(new PromptStreamEvent.TurnEnded(turn, usage));
-                onComplete.accept(messages, new TokenUsage(inputTokens, outputTokens));
-                return;
+            } catch (ToolExecutionException toolException) {
+                // Tool failure already recorded as ToolFailed; do not also emit TurnFailed.
+                throw toolException;
+            } catch (EngineException engineException) {
+                listener.onEvent(
+                        new EngineEvent.TurnFailed(turn, engineException.code(), engineException.getMessage()));
+                throw engineException;
             }
-            for (ModelStreamEvent.ToolCallRequested toolCall : toolCalls) {
-                listener.onEvent(new EngineEvent.ToolStarted(turn, toolCall.name(), toolCall.id()));
-                validateToolInput(request.tools(), toolCall);
-                messages.add(new HelmMessage(
-                        Role.ASSISTANT, List.of(new ToolCallBlock(toolCall.id(), toolCall.name(), toolCall.input()))));
-                Object output = request.toolExecutor().execute("engine", toolCall.name(), toolCall.input());
-                validateToolOutput(toolCall.name(), output);
-                messages.add(new HelmMessage(Role.TOOL, List.of(new ToolResultBlock(toolCall.id(), output, false))));
-                pub.submit(new PromptStreamEvent.ToolResultReady(toolCall.id(), toolCall.name(), output));
-                listener.onEvent(new EngineEvent.ToolSucceeded(turn, toolCall.name(), toolCall.id()));
-            }
-            listener.onEvent(new EngineEvent.TurnSucceeded(turn, usage));
-            pub.submit(new PromptStreamEvent.TurnEnded(turn, usage));
         }
         throw new MaxTurnsExceededException(
                 "Agent loop exceeded max turns: " + request.maxTurns(),
