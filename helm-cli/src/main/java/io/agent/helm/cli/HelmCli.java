@@ -19,6 +19,7 @@ public final class HelmCli {
         version = "helm 0.1.0-SNAPSHOT",
         subcommands = {
             RunCommand.class,
+            PromptCommand.class,
             DevCommand.class,
             OperationsCommand.class,
             RunsCommand.class,
