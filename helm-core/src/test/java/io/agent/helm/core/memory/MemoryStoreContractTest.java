@@ -53,7 +53,9 @@ public abstract class MemoryStoreContractTest {
         store.save(new MemoryRecord("m3", "scope-b", "language", "User prefers Java", T1));
 
         assertThat(store.search("scope-a", "java")).extracting(MemoryRecord::id).containsExactly("m1");
-        assertThat(store.search("scope-a", "timezone")).extracting(MemoryRecord::id).containsExactly("m2");
+        assertThat(store.search("scope-a", "timezone"))
+                .extracting(MemoryRecord::id)
+                .containsExactly("m2");
         assertThat(store.search("scope-a", "missing")).isEmpty();
     }
 

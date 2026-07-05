@@ -18,8 +18,8 @@ import java.util.Optional;
 import javax.sql.DataSource;
 
 /**
- * JDBC {@link MemoryStore}. Uses the {@code helm_memory} table created by the {@code V2__memory}
- * migration. SQL errors are mapped to {@link PersistenceException}.
+ * JDBC {@link MemoryStore}. Uses the {@code helm_memory} table created by the {@code V2__memory} migration. SQL errors
+ * are mapped to {@link PersistenceException}.
  */
 public final class JdbcMemoryStore implements MemoryStore {
     private final DataSource dataSource;

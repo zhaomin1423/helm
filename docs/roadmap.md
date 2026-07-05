@@ -65,6 +65,24 @@ helm/
 - Adapter 模块只依赖稳定 API/SPI，不能依赖 runtime internals。
 - Testkit 只提供合约测试和 fixture，不成为生产依赖。
 
+### 3.1 生产组件缺口分析（2026-07-05）
+
+对照生产环境 Agent 框架所需组件的检查结论：
+
+| 组件 | 检查前状态 | 结论与动作 |
+| --- | --- | --- |
+| CLI | 已有 `helm-cli`（run/dev/operations/runs/run-detail） | 已具备 |
+| HTTP / Servlet / Spring Boot | 已有 `helm-http-core`、`helm-http-servlet`、`helm-spring-boot-starter` | 已具备 |
+| 持久化 | 已有 `RuntimeStore` SPI + `helm-persistence-jdbc` | 已具备 |
+| Provider / Sandbox / Skill | 已有 OpenAI/Anthropic provider、local sandbox、skill loader | 已具备 |
+| 可观测性 | 已有 `RuntimeEventObserver` + `helm-observability-logging` | 已具备（metrics/OTel 见 M9） |
+| **Memory 管理（长期记忆）** | 缺失 | 新增 `MemoryStore` SPI（`helm-core`）、`InMemoryMemoryStore` + 内置 `save_memory` tool（`helm-runtime`）、`JdbcMemoryStore` + `V2__memory` 迁移（`helm-persistence-jdbc`）；记忆按 `agentName:instanceId` scope 存储，prompt 时自动注入 instructions |
+| **Session 管理（生命周期）** | 只有隐式会话持久化 | `RuntimeStore` 新增 `listSessions`/`deleteSession`；`AgentRuntime` 新增 `listSessions`/`getSession`/`resetSession` |
+| **上下文控制（history compaction）** | 历史无限增长 | `AgentRuntime.Builder.maxSessionMessages` 裁剪历史，裁剪窗口从 user message 开始，避免孤立 tool result |
+| 验证示例 | 缺少覆盖 memory/session 的示例 | 新增 `examples/memory-session-example`：客服助手场景端到端验证 memory、session 恢复、session 管理、tool 调用与 operation 检查 |
+
+仍留待后续 milestone 的生产能力：流式响应 API 暴露、并发/队列调度（M11）、rate limiting、authorizer 落地（M6）、metrics/OTel（M9）、remote sandbox（M11）、向量化语义记忆检索（当前 `MemoryStore.search` 为关键字匹配，SPI 已预留替换点）。
+
 ## 4. Milestone 总览
 
 状态取值：`proposed`、`active`、`blocked`、`complete`。
@@ -452,6 +470,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 
 | Date | Update |
 | --- | --- |
+| 2026-07-05 | 完成生产组件缺口分析并补齐 Memory/Session 管理：`helm-core` 新增 `MemoryRecord`/`MemoryStore` SPI 与 `MemoryStoreContractTest`，`RuntimeStore` 增加 `listSessions`/`deleteSession`；`helm-runtime` 新增 `InMemoryMemoryStore`、内置 `save_memory` tool、记忆注入 instructions、`AgentRuntime` session 管理 API（list/get/reset）与 `maxSessionMessages` 历史裁剪；`helm-persistence-jdbc` 新增 `JdbcMemoryStore` 与 `V2__memory.sql`；新增 `examples/memory-session-example` 端到端验证。详见第 3.1 节。 |
 | 2026-07-04 | 完成系统设计 Milestone 5：新增 `helm-persistence-jdbc`（`JdbcRuntimeStore` 注入 DataSource，JSON 列存负载，Flyway `V1__init.sql` 迁移，SQL 异常映射 `PersistenceException`）与 `helm-observability-logging`（`LoggingRuntimeObserver` 结构化 SLF4J 日志，仅记元数据不记 payload）；`helm-core` 新增 `RuntimeEventObserver` SPI。`RuntimeStoreContractTest` 在 InMemory 与 JDBC（H2）上均通过；文件模式 H2 重启恢复测试通过。`mvn verify` 全绿（170 测试）。系统设计 M1–M5 全部完成。 |
 | 2026-07-04 | 完成系统设计 Milestone 3：新增 `helm-http-core`、`helm-http-servlet`、`helm-cli`；框架无关 HTTP DTO/路由/错误映射，`HelmHttpServlet` 适配 Jakarta Servlet，Picocli `helm run`/`dev`/`operations`/`runs`/`run-detail`。`HttpErrorContractTest` 在 router 与 servlet（Jetty）上均通过；CLI 端到端测试通过；`mvn verify` 全绿（132 测试），`helm-http-core` 不依赖 Servlet。 |
 | 2026-07-04 | 完成系统设计 Milestone 2：新增 `helm-provider-openai`、`helm-provider-anthropic`、`helm-sandbox-local`；`helm-core` 发布 test-jar 提供 `ModelProviderContractTest`/`SandboxContractTest` 契约基类；`helm-runtime` 增加 `ClasspathSkillLoader`。FakeProvider/InMemorySandbox/LocalSandbox 及两个真实 provider 均通过契约测试；切换验证通过；`mvn verify` 全绿（107 测试），core 三模块无新增生产依赖。 |

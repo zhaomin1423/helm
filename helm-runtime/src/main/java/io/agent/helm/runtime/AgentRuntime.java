@@ -256,8 +256,7 @@ public final class AgentRuntime {
         if (memoryStore == null) {
             return config.tools();
         }
-        boolean hasMemoryTool =
-                config.tools().stream().anyMatch(tool -> SaveMemoryTool.NAME.equals(tool.name()));
+        boolean hasMemoryTool = config.tools().stream().anyMatch(tool -> SaveMemoryTool.NAME.equals(tool.name()));
         if (hasMemoryTool) {
             return config.tools();
         }
@@ -288,9 +287,8 @@ public final class AgentRuntime {
     }
 
     /**
-     * Keeps the conversation history bounded. Retains at most {@code maxSessionMessages} of the most
-     * recent messages, dropping leading messages until the window starts at a user message so tool
-     * results are never orphaned.
+     * Keeps the conversation history bounded. Retains at most {@code maxSessionMessages} of the most recent messages,
+     * dropping leading messages until the window starts at a user message so tool results are never orphaned.
      */
     private List<HelmMessage> trimHistory(List<HelmMessage> messages) {
         if (maxSessionMessages <= 0 || messages.size() <= maxSessionMessages) {
@@ -401,8 +399,8 @@ public final class AgentRuntime {
         }
 
         /**
-         * Enables long-term memory: recalled memories are injected into agent instructions and the
-         * built-in {@code save_memory} tool is registered for every prompt.
+         * Enables long-term memory: recalled memories are injected into agent instructions and the built-in
+         * {@code save_memory} tool is registered for every prompt.
          */
         public Builder memoryStore(MemoryStore memoryStore) {
             this.memoryStore = Objects.requireNonNull(memoryStore, "memoryStore");
@@ -410,8 +408,8 @@ public final class AgentRuntime {
         }
 
         /**
-         * Bounds the session history sent to the model and persisted after each prompt. {@code 0}
-         * (the default) keeps the full history.
+         * Bounds the session history sent to the model and persisted after each prompt. {@code 0} (the default) keeps
+         * the full history.
          */
         public Builder maxSessionMessages(int maxSessionMessages) {
             if (maxSessionMessages < 0) {

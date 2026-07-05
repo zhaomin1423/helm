@@ -11,10 +11,9 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Built-in tool that lets the model persist a long-term memory for the current agent scope. The
- * runtime registers it automatically when a {@link MemoryStore} is configured. Input is accepted
- * either as a typed {@link Input} record (fake providers, tests) or as a JSON object map (real
- * providers).
+ * Built-in tool that lets the model persist a long-term memory for the current agent scope. The runtime registers it
+ * automatically when a {@link MemoryStore} is configured. Input is accepted either as a typed {@link Input} record
+ * (fake providers, tests) or as a JSON object map (real providers).
  */
 public final class SaveMemoryTool implements Tool<Object, String> {
     public static final String NAME = "save_memory";

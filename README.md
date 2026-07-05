@@ -17,6 +17,8 @@ Helm 的目标是把这些能力做成 Java 开发者熟悉的框架：
 - **Tool**：把数据库、业务服务和外部 API 封装成模型可调用的窄能力。
 - **Skill**：把可复用经验、流程和说明打包给 Agent 使用。
 - **Sandbox**：为文件系统和 shell 操作提供受控边界。
+- **Memory**：把跨 session 的长期记忆（用户偏好、稳定事实）存储在可替换的 `MemoryStore` 中，并自动注入后续对话。
+- **Session 管理**：持久化会话历史，支持恢复、列出、检查和重置 session，并可限制历史长度。
 - **Provider SPI**：用统一接口接入 OpenAI、Anthropic、本地模型或企业网关。
 
 ## 特性规划
@@ -27,6 +29,8 @@ Helm 的目标是把这些能力做成 Java 开发者熟悉的框架：
 | Agent engine | 内置 `helm-agent-engine`，负责 agent loop、turn、stream、tool-call 编排和 compaction。 |
 | Typed tools | 使用 Java 类型定义 tool 输入输出，并生成模型可理解的 schema。 |
 | Persistent sessions | 保存 Agent session、operation、消息历史和事件。 |
+| Session management | 列出、检查、重置 session；`maxSessionMessages` 限制上下文长度。 |
+| Long-term memory | `MemoryStore` SPI + 内置 `save_memory` tool，记忆按 agent 实例 scope 存储并自动注入 instructions。 |
 | Finite workflows | 支持有限任务运行、状态查询、结果返回和事件检查。 |
 | Replaceable providers | 通过 `ModelProvider` SPI 接入不同模型供应商。 |
 | Sandbox SPI | 支持内存 sandbox 和本地开发 sandbox，后续可扩展到容器或远程 sandbox。 |

@@ -44,12 +44,10 @@ final class AgentRuntimeMemorySessionTest {
 
         assertThat(provider.requests.get(0).tools())
                 .anySatisfy(tool -> assertThat(tool.name()).isEqualTo(SaveMemoryTool.NAME));
-        assertThat(memoryStore.list("assistant:instance-1"))
-                .singleElement()
-                .satisfies(memory -> {
-                    assertThat(memory.subject()).isEqualTo("language");
-                    assertThat(memory.content()).isEqualTo("User prefers Java");
-                });
+        assertThat(memoryStore.list("assistant:instance-1")).singleElement().satisfies(memory -> {
+            assertThat(memory.subject()).isEqualTo("language");
+            assertThat(memory.content()).isEqualTo("User prefers Java");
+        });
     }
 
     @Test
@@ -112,7 +110,9 @@ final class AgentRuntimeMemorySessionTest {
         runtime.resetSession("assistant:instance-1:a");
 
         assertThat(runtime.getSession("assistant:instance-1:a")).isEmpty();
-        assertThat(runtime.listSessions()).extracting(AgentSessionState::sessionName).containsExactly("b");
+        assertThat(runtime.listSessions())
+                .extracting(AgentSessionState::sessionName)
+                .containsExactly("b");
     }
 
     @Test
