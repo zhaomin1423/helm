@@ -24,6 +24,7 @@
     <module>helm-persistence-jdbc</module>
     <module>helm-observability-logging</module>
     <module>helm-observability-opentelemetry</module>
+    <module>helm-runtime-testkit</module>
     <module>helm-memory-semantic</module>
     <module>helm-client</module>
     <module>helm-bom</module>
