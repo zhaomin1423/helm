@@ -7,4 +7,9 @@ public final class TurnTimeoutException extends EngineException {
     public TurnTimeoutException(String message, Map<String, Object> details, Map<String, Object> developerDetails) {
         super(ErrorCode.ENGINE_TIMEOUT, message, details, developerDetails);
     }
+
+    public TurnTimeoutException(
+            String message, Map<String, Object> details, Map<String, Object> developerDetails, Throwable cause) {
+        super(ErrorCode.ENGINE_TIMEOUT, message, details, developerDetails, cause);
+    }
 }

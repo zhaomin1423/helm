@@ -11,6 +11,15 @@ public final class AuthorizationException extends HelmException {
         super(code, message, details, developerDetails);
     }
 
+    public AuthorizationException(
+            ErrorCode code,
+            String message,
+            Map<String, Object> details,
+            Map<String, Object> developerDetails,
+            Throwable cause) {
+        super(code, message, details, developerDetails, cause);
+    }
+
     public static AuthorizationException unauthorized(String message, Map<String, Object> details) {
         return new AuthorizationException(ErrorCode.UNAUTHORIZED, message, details, Map.of());
     }

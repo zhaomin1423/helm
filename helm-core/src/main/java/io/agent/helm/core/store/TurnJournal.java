@@ -7,8 +7,8 @@ import java.util.List;
 
 /**
  * Turn-granularity journal for mid-turn recovery. SPI anchor for the post-GA durable scale runtime; the default runtime
- * persists session state after each turn via {@link RuntimeStore#saveSession} and does not yet use this
- * journal. @Preview M11 post-GA; the SPI shape is being validated and may change before implementation.
+ * persists session state after each turn via {@link RuntimeStore#saveSession} and does not yet use this journal.
+ * {@code @Preview} M11 post-GA; the SPI shape is being validated and may change before implementation.
  */
 @Preview
 public interface TurnJournal {

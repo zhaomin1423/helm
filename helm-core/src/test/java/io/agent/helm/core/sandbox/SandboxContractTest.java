@@ -62,6 +62,16 @@ public abstract class SandboxContractTest {
     }
 
     @Test
+    void deleteRemovesDirectoryRecursively() {
+        sandbox().fs().writeText("dir/a.txt", "a");
+        sandbox().fs().writeText("dir/sub/b.txt", "b");
+        sandbox().fs().delete("dir");
+        assertThat(sandbox().fs().exists("dir")).isFalse();
+        assertThat(sandbox().fs().exists("dir/a.txt")).isFalse();
+        assertThat(sandbox().fs().exists("dir/sub/b.txt")).isFalse();
+    }
+
+    @Test
     void readTextOfMissingFileThrows() {
         assertThatThrownBy(() -> sandbox().fs().readText("nope.txt")).isInstanceOf(SandboxException.class);
     }

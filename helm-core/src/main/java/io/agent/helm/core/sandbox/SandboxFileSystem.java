@@ -16,5 +16,10 @@ public interface SandboxFileSystem {
 
     boolean exists(String path);
 
+    /**
+     * Deletes the file or directory at {@code path}. When {@code path} denotes a directory, deletion is
+     * <b>recursive</b> — every entry beneath it is removed as well. Implementations must reject paths that escape the
+     * sandbox root and must not follow symlinks outside the root.
+     */
     void delete(String path);
 }

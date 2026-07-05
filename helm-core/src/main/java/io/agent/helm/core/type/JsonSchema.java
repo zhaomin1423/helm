@@ -10,11 +10,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * JSON Schema describing tool inputs. Built by reflection from {@link TypeDescriptor}; supports string, integer,
- * number, boolean, enum, record (object), {@code List<X>} (array), {@code Map<String, X>} (object with
- * additionalProperties), and {@code Optional<X>} (nullable). Record components may carry {@link SchemaDescription}.
+ * number, boolean, enum, record (object), {@code List<X>} / {@code Set<X>} (array), {@code Map<String, X>} (object with
+ * additionalProperties), and {@code Optional<X>} (nullable, unwraps nested {@code Optional<Optional<X>>} and
+ * {@code Optional<List<X>>}). Also maps common JDK value types: {@link java.util.UUID}, {@link java.net.URI},
+ * {@link java.net.URL}, {@link java.math.BigDecimal}, {@link java.math.BigInteger}, and the {@code java.time} temporal
+ * types ({@link java.time.Instant}, {@link java.time.LocalDate}, {@link java.time.LocalDateTime},
+ * {@link java.time.OffsetDateTime}, {@link java.time.ZonedDateTime}, {@link java.time.Duration}) to {@code string} or
+ * {@code number}. Record components may carry {@link SchemaDescription}.
  */
 public record JsonSchema(
         String type,
@@ -104,6 +110,20 @@ public record JsonSchema(
             if (clazz == boolean.class || clazz == Boolean.class) {
                 return bool();
             }
+            if (clazz == java.math.BigDecimal.class || clazz == java.math.BigInteger.class) {
+                return number();
+            }
+            if (clazz == java.util.UUID.class || clazz == java.net.URI.class || clazz == java.net.URL.class) {
+                return string();
+            }
+            if (clazz == java.time.Instant.class
+                    || clazz == java.time.LocalDate.class
+                    || clazz == java.time.LocalDateTime.class
+                    || clazz == java.time.OffsetDateTime.class
+                    || clazz == java.time.ZonedDateTime.class
+                    || clazz == java.time.Duration.class) {
+                return string();
+            }
             if (clazz.isEnum()) {
                 String[] names = Arrays.stream(clazz.getEnumConstants())
                         .map(Object::toString)
@@ -113,21 +133,42 @@ public record JsonSchema(
             if (clazz.isRecord()) {
                 return fromRecord(clazz);
             }
+            // Raw List/Set/Map (no type arguments) fall through to permissive schemas.
+            if (clazz == List.class || clazz == Set.class) {
+                return array(null);
+            }
+            if (clazz == Map.class) {
+                return object(Map.of(), List.of());
+            }
         }
         if (type instanceof ParameterizedType parameterizedType) {
             Type raw = parameterizedType.getRawType();
             Type[] args = parameterizedType.getActualTypeArguments();
-            if (raw == List.class) {
-                return array(fromType(args[0]));
+            if (raw == List.class || raw == Set.class) {
+                if (args.length == 1 && args[0] != null) {
+                    return array(fromType(args[0]));
+                }
+                return array(null);
             }
             if (raw == Map.class) {
-                if (args[0] != String.class && !(args[0] instanceof Class<?> c && c == String.class)) {
+                if (args.length == 2
+                        && args[0] != null
+                        && !(args[0] instanceof Class<?> c && c == String.class)
+                        && !(args[0] instanceof ParameterizedType pt
+                                && pt.getRawType() instanceof Class<?> rc
+                                && rc == String.class)) {
                     throw new IllegalArgumentException("Map key must be String: " + type.getTypeName());
                 }
-                return map(fromType(args[1]));
+                if (args.length == 2 && args[1] != null) {
+                    return map(fromType(args[1]));
+                }
+                return object(Map.of(), List.of());
             }
             if (raw == Optional.class) {
-                return fromType(args[0]).withNullable();
+                if (args.length == 1 && args[0] != null) {
+                    return fromType(args[0]).withNullable();
+                }
+                return object(Map.of(), List.of()).withNullable();
             }
         }
         throw new IllegalArgumentException("Unsupported schema type: " + type.getTypeName());

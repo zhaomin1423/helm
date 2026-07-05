@@ -41,8 +41,67 @@ final class TypeDescriptorTest {
     }
 
     @Test
+    void supportsJdkValueAndTemporalTypes() {
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.util.UUID.class)).type())
+                .isEqualTo("string");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.net.URI.class)).type())
+                .isEqualTo("string");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.net.URL.class)).type())
+                .isEqualTo("string");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.math.BigDecimal.class))
+                        .type())
+                .isEqualTo("number");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.math.BigInteger.class))
+                        .type())
+                .isEqualTo("number");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.time.Instant.class)).type())
+                .isEqualTo("string");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.time.LocalDate.class)).type())
+                .isEqualTo("string");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.time.LocalDateTime.class))
+                        .type())
+                .isEqualTo("string");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.time.OffsetDateTime.class))
+                        .type())
+                .isEqualTo("string");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.time.ZonedDateTime.class))
+                        .type())
+                .isEqualTo("string");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.time.Duration.class)).type())
+                .isEqualTo("string");
+    }
+
+    @Test
+    void supportsSetAndRawCollections() {
+        JsonSchema setSchema = JsonSchema.from(new TypeDescriptor<java.util.Set<String>>() {});
+        assertThat(setSchema.type()).isEqualTo("array");
+        assertThat(setSchema.items()).isEqualTo(JsonSchema.string());
+
+        // Raw List / Map (no type args) collapse to permissive array / object.
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.util.List.class)).type())
+                .isEqualTo("array");
+        assertThat(JsonSchema.from(TypeDescriptor.of(java.util.Map.class)).type())
+                .isEqualTo("object");
+    }
+
+    @Test
+    void supportsNestedOptionalUnwrapping() {
+        TypeDescriptor<java.util.Optional<java.util.List<String>>> outerType = new TypeDescriptor<>() {};
+        JsonSchema outer = JsonSchema.from(outerType);
+        assertThat(outer.type()).isEqualTo("array");
+        assertThat(outer.items()).isEqualTo(JsonSchema.string());
+        assertThat(outer.nullable()).isTrue();
+
+        TypeDescriptor<java.util.Optional<java.util.Optional<String>>> doubleOptType = new TypeDescriptor<>() {};
+        JsonSchema doubleOpt = JsonSchema.from(doubleOptType);
+        assertThat(doubleOpt.type()).isEqualTo("string");
+        assertThat(doubleOpt.nullable()).isTrue();
+    }
+
+    @Test
     void rejectsUnsupportedTypes() {
-        assertThatThrownBy(() -> JsonSchema.from(TypeDescriptor.of(java.util.UUID.class)))
+        // UUID/Instant/Set now succeed; a genuinely unsupported type (raw Object) remains the rejection case.
+        assertThatThrownBy(() -> JsonSchema.from(TypeDescriptor.of(Object.class)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unsupported schema type");
     }

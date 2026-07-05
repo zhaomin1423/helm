@@ -1,6 +1,5 @@
 package io.agent.helm.core.error;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -15,6 +14,11 @@ public final class ContextOverflowException extends HelmException {
 
     public ContextOverflowException(String message, Map<String, Object> details, Map<String, Object> developerDetails) {
         super(ErrorCode.CONTEXT_OVERFLOW, message, details, developerDetails);
+    }
+
+    public ContextOverflowException(
+            String message, Map<String, Object> details, Map<String, Object> developerDetails, Throwable cause) {
+        super(ErrorCode.CONTEXT_OVERFLOW, message, details, developerDetails, cause);
     }
 
     /** Input prompt tokens exceed the model limit. */
@@ -33,8 +37,9 @@ public final class ContextOverflowException extends HelmException {
     }
 
     private static Map<String, Object> withKind(Map<String, Object> details, String kind) {
-        Map<String, Object> merged = new LinkedHashMap<>(details);
+        Map<String, Object> copy = copySafe(details);
+        Map<String, Object> merged = new java.util.HashMap<>(copy);
         merged.put("kind", kind);
-        return Map.copyOf(merged);
+        return java.util.Collections.unmodifiableMap(merged);
     }
 }

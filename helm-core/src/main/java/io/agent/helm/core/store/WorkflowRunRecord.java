@@ -1,20 +1,26 @@
 package io.agent.helm.core.store;
 
+import io.agent.helm.core.error.HelmException;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 
+/**
+ * Persisted record of a workflow run. {@code input}/{@code output} are raw JSON strings — callers MUST pass
+ * JSON-serializable strings (the record does not validate or parse them).
+ */
 public record WorkflowRunRecord(
         String id,
         String workflowName,
         WorkflowRunStatus status,
-        Object input,
-        Object output,
+        String input,
+        String output,
         Map<String, Object> error,
         Instant createdAt,
         Instant completedAt) {
     public WorkflowRunRecord {
+        Objects.requireNonNull(id, "id");
         status = Objects.requireNonNull(status, "status");
-        error = Map.copyOf(Objects.requireNonNull(error, "error"));
+        error = HelmException.copySafe(error);
     }
 }

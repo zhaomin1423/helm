@@ -5,7 +5,8 @@ import java.util.List;
 
 /**
  * Vector store for semantic memory search. {@link #store} persists a vector alongside a memory; {@link #search} returns
- * the top-K most similar memories by cosine similarity. @Experimental semantic retrieval SPI shape is being validated.
+ * the top-K most similar memories by cosine similarity. {@code @Experimental} semantic retrieval SPI shape is being
+ * validated.
  */
 @Experimental
 public interface EmbeddingStore {

@@ -1,9 +1,13 @@
 package io.agent.helm.core.store;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.agent.helm.core.error.SessionConflictException;
 import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.event.RuntimeEventType;
 import io.agent.helm.core.message.HelmMessage;
+import io.agent.helm.core.security.HelmAction;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -64,10 +68,55 @@ public abstract class RuntimeStoreContractTest {
     }
 
     @Test
+    void saveSessionFreshInsertSucceeds() {
+        RuntimeStore store = createStore();
+        AgentSessionState fresh = new AgentSessionState("s1", "agent", "instance-1", "default", 1, List.of(), T1, T1);
+
+        store.saveSession(fresh);
+
+        assertThat(store.loadSession("s1")).contains(fresh);
+    }
+
+    @Test
+    void saveSessionWithStaleVersionThrowsConflict() {
+        RuntimeStore store = createStore();
+        AgentSessionState v1 = new AgentSessionState("s1", "agent", "instance-1", "default", 1, List.of(), T1, T1);
+        store.saveSession(v1);
+        AgentSessionState stale = new AgentSessionState("s1", "agent", "instance-1", "default", 0, List.of(), T1, T2);
+
+        assertThatThrownBy(() -> store.saveSession(stale)).isInstanceOf(SessionConflictException.class);
+    }
+
+    @Test
+    void saveSessionWithCurrentVersionSucceeds() {
+        RuntimeStore store = createStore();
+        AgentSessionState v1 = new AgentSessionState("s1", "agent", "instance-1", "default", 1, List.of(), T1, T1);
+        store.saveSession(v1);
+
+        // Reload to pick up whatever version the store now reports (adapters may bump on save), then save again.
+        AgentSessionState reloaded = store.loadSession("s1").orElseThrow();
+        AgentSessionState updated = new AgentSessionState(
+                reloaded.id(),
+                reloaded.agentName(),
+                reloaded.instanceId(),
+                reloaded.sessionName(),
+                reloaded.version(),
+                List.of(HelmMessage.user("more")),
+                reloaded.createdAt(),
+                T2);
+
+        store.saveSession(updated);
+
+        assertThat(store.loadSession("s1")).hasValueSatisfying(s -> assertThat(s.messages())
+                .extracting(m -> m.content().get(0))
+                .isNotNull());
+    }
+
+    @Test
     void saveAndLoadOperation() {
         RuntimeStore store = createStore();
         OperationRecord op = new OperationRecord(
-                "op1", "s1", "PROMPT", OperationStatus.SUCCEEDED, "input", "output", Map.of(), T1, T2);
+                "op1", "s1", HelmAction.PROMPT, OperationStatus.SUCCEEDED, "\"input\"", "\"output\"", Map.of(), T1, T2);
 
         store.saveOperation(op);
 
@@ -82,10 +131,10 @@ public abstract class RuntimeStoreContractTest {
     @Test
     void listOperationsSortedByCreatedAtAscending() {
         RuntimeStore store = createStore();
-        store.saveOperation(
-                new OperationRecord("op2", "s1", "PROMPT", OperationStatus.SUCCEEDED, "in2", "out2", Map.of(), T2, T2));
-        store.saveOperation(
-                new OperationRecord("op1", "s1", "PROMPT", OperationStatus.RUNNING, "in1", null, Map.of(), T1, null));
+        store.saveOperation(new OperationRecord(
+                "op2", "s1", HelmAction.PROMPT, OperationStatus.SUCCEEDED, "\"in2\"", "\"out2\"", Map.of(), T2, T2));
+        store.saveOperation(new OperationRecord(
+                "op1", "s1", HelmAction.PROMPT, OperationStatus.RUNNING, "\"in1\"", null, Map.of(), T1, null));
 
         assertThat(store.listOperations()).extracting(OperationRecord::id).containsExactly("op1", "op2");
     }
@@ -93,8 +142,8 @@ public abstract class RuntimeStoreContractTest {
     @Test
     void saveAndLoadWorkflowRun() {
         RuntimeStore store = createStore();
-        WorkflowRunRecord run =
-                new WorkflowRunRecord("run1", "workflow", WorkflowRunStatus.SUCCEEDED, "in", "out", Map.of(), T1, T2);
+        WorkflowRunRecord run = new WorkflowRunRecord(
+                "run1", "workflow", WorkflowRunStatus.SUCCEEDED, "\"in\"", "\"out\"", Map.of(), T1, T2);
 
         store.saveWorkflowRun(run);
 
@@ -109,10 +158,10 @@ public abstract class RuntimeStoreContractTest {
     @Test
     void listWorkflowRunsSortedByCreatedAtAscending() {
         RuntimeStore store = createStore();
+        store.saveWorkflowRun(new WorkflowRunRecord(
+                "run2", "wf", WorkflowRunStatus.SUCCEEDED, "\"in2\"", "\"out2\"", Map.of(), T2, T2));
         store.saveWorkflowRun(
-                new WorkflowRunRecord("run2", "wf", WorkflowRunStatus.SUCCEEDED, "in2", "out2", Map.of(), T2, T2));
-        store.saveWorkflowRun(
-                new WorkflowRunRecord("run1", "wf", WorkflowRunStatus.RUNNING, "in1", null, Map.of(), T1, null));
+                new WorkflowRunRecord("run1", "wf", WorkflowRunStatus.RUNNING, "\"in1\"", null, Map.of(), T1, null));
 
         assertThat(store.listWorkflowRuns()).extracting(WorkflowRunRecord::id).containsExactly("run1", "run2");
     }
@@ -120,8 +169,10 @@ public abstract class RuntimeStoreContractTest {
     @Test
     void eventsForOperationOrderedBySequence() {
         RuntimeStore store = createStore();
-        store.appendEvent(new RuntimeEventRecord("e2", "op1", null, 2, "second", Map.of("k", "v"), T2));
-        store.appendEvent(new RuntimeEventRecord("e1", "op1", null, 1, "first", Map.of(), T1));
+        store.appendEvent(new RuntimeEventRecord(
+                "e2", "op1", null, 2, RuntimeEventType.OPERATION_SUCCEEDED, Map.of("k", "v"), T2));
+        store.appendEvent(
+                new RuntimeEventRecord("e1", "op1", null, 1, RuntimeEventType.OPERATION_STARTED, Map.of(), T1));
 
         assertThat(store.eventsForOperation("op1"))
                 .extracting(RuntimeEventRecord::id)
@@ -131,8 +182,10 @@ public abstract class RuntimeStoreContractTest {
     @Test
     void eventsForWorkflowRunOrderedBySequence() {
         RuntimeStore store = createStore();
-        store.appendEvent(new RuntimeEventRecord("e2", null, "run1", 2, "second", Map.of(), T2));
-        store.appendEvent(new RuntimeEventRecord("e1", null, "run1", 1, "first", Map.of(), T1));
+        store.appendEvent(
+                new RuntimeEventRecord("e2", null, "run1", 2, RuntimeEventType.WORKFLOW_SUCCEEDED, Map.of(), T2));
+        store.appendEvent(
+                new RuntimeEventRecord("e1", null, "run1", 1, RuntimeEventType.WORKFLOW_STARTED, Map.of(), T1));
 
         assertThat(store.eventsForWorkflowRun("run1"))
                 .extracting(RuntimeEventRecord::id)
@@ -149,14 +202,14 @@ public abstract class RuntimeStoreContractTest {
     @Test
     void saveReplacesExistingRecord() {
         RuntimeStore store = createStore();
-        store.saveOperation(
-                new OperationRecord("op1", "s1", "PROMPT", OperationStatus.RUNNING, "in", null, Map.of(), T1, null));
-        store.saveOperation(
-                new OperationRecord("op1", "s1", "PROMPT", OperationStatus.SUCCEEDED, "in", "out", Map.of(), T1, T2));
+        store.saveOperation(new OperationRecord(
+                "op1", "s1", HelmAction.PROMPT, OperationStatus.RUNNING, "\"in\"", null, Map.of(), T1, null));
+        store.saveOperation(new OperationRecord(
+                "op1", "s1", HelmAction.PROMPT, OperationStatus.SUCCEEDED, "\"in\"", "\"out\"", Map.of(), T1, T2));
 
         assertThat(store.loadOperation("op1")).hasValueSatisfying(op -> {
             assertThat(op.status()).isEqualTo(OperationStatus.SUCCEEDED);
-            assertThat(op.output()).isEqualTo("out");
+            assertThat(op.output()).isEqualTo("\"out\"");
         });
     }
 }

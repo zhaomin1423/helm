@@ -13,8 +13,22 @@ public final class ToolExecutionException extends HelmException {
     }
 
     public ToolExecutionException(
+            String message, Map<String, Object> details, Map<String, Object> developerDetails, Throwable cause) {
+        super(ErrorCode.TOOL_EXECUTION_FAILED, message, details, developerDetails, cause);
+    }
+
+    public ToolExecutionException(
             ErrorCode code, String message, Map<String, Object> details, Map<String, Object> developerDetails) {
         super(code, message, details, developerDetails);
+    }
+
+    public ToolExecutionException(
+            ErrorCode code,
+            String message,
+            Map<String, Object> details,
+            Map<String, Object> developerDetails,
+            Throwable cause) {
+        super(code, message, details, developerDetails, cause);
     }
 
     /** Tool input does not satisfy the tool's declared schema; raised before user tool code runs. */

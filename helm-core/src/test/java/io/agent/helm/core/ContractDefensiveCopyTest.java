@@ -4,9 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.agent.helm.core.agent.AgentConfig;
+import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.event.RuntimeEventType;
 import io.agent.helm.core.message.HelmMessage;
 import io.agent.helm.core.model.ModelRef;
+import io.agent.helm.core.sandbox.Sandbox;
 import io.agent.helm.core.sandbox.SandboxCommand;
+import io.agent.helm.core.security.HelmAction;
 import io.agent.helm.core.store.AgentSessionState;
 import io.agent.helm.core.store.OperationRecord;
 import io.agent.helm.core.store.OperationStatus;
@@ -157,12 +161,38 @@ final class ContractDefensiveCopyTest {
     void runtimeEventRecordCopiesPayload() {
         Map<String, Object> payload = new HashMap<>(Map.of("message", "ok"));
 
-        var record = new io.agent.helm.core.event.RuntimeEventRecord(
-                "id", "op", "run", 1, "type", payload, Instant.parse("2026-06-28T00:00:00Z"));
+        var record = new RuntimeEventRecord(
+                "id",
+                "op",
+                "run",
+                1,
+                RuntimeEventType.OPERATION_STARTED,
+                payload,
+                Instant.parse("2026-06-28T00:00:00Z"));
 
         payload.put("other", "value");
 
         assertThat(record.payload()).containsEntry("message", "ok");
+        assertThatThrownBy(() -> record.payload().put("x", "y")).isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void runtimeEventRecordSkipsNullPayloadEntries() {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("keep", "v");
+        payload.put("drop", null);
+        payload.put(null, "skip");
+
+        RuntimeEventRecord record = new RuntimeEventRecord(
+                "id",
+                "op",
+                "run",
+                1,
+                RuntimeEventType.OPERATION_STARTED,
+                payload,
+                Instant.parse("2026-06-28T00:00:00Z"));
+
+        assertThat(record.payload()).containsOnlyKeys("keep");
         assertThatThrownBy(() -> record.payload().put("x", "y")).isInstanceOf(UnsupportedOperationException.class);
     }
 
@@ -173,7 +203,7 @@ final class ContractDefensiveCopyTest {
         OperationRecord record = new OperationRecord(
                 "id",
                 "session",
-                "type",
+                HelmAction.PROMPT,
                 OperationStatus.FAILED,
                 null,
                 null,
@@ -205,5 +235,19 @@ final class ContractDefensiveCopyTest {
 
         assertThat(record.error()).containsEntry("message", "boom");
         assertThatThrownBy(() -> record.error().put("x", "y")).isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void agentConfigDefaultsSandboxToDisabledWhenNull() {
+        AgentConfig config = AgentConfig.builder().model("openai/gpt-4.1").build();
+
+        assertThat(config.sandbox()).isNotNull().isSameAs(Sandbox.disabled());
+    }
+
+    @Test
+    void agentConfigDirectConstructorDefaultsSandboxWhenNull() {
+        AgentConfig config = new AgentConfig(ModelRef.parse("openai/gpt-4.1"), "", List.of(), null);
+
+        assertThat(config.sandbox()).isSameAs(Sandbox.disabled());
     }
 }

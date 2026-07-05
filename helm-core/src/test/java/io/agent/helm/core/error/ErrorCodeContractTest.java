@@ -1,14 +1,16 @@
 package io.agent.helm.core.error;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
-/** Verifies that every HelmException code is registered in {@link ErrorCode} and codes are unique. */
+/**
+ * Verifies that every HelmException code is registered in {@link ErrorCode}, codes are unique, and
+ * {@link ErrorCode#stable()} pins to {@link Enum#name()} for the current enum set.
+ */
 class ErrorCodeContractTest {
 
     @Test
@@ -22,31 +24,37 @@ class ErrorCodeContractTest {
     }
 
     @Test
-    void helmExceptionRejectsUnknownCode() {
-        assertThatThrownBy(() -> new TestHelmException("UNKNOWN_CODE", "m", Map.of(), Map.of()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("unknown HelmException code");
+    void stableEqualsNameForAllCurrentValues() {
+        for (ErrorCode code : ErrorCode.values()) {
+            assertThat(code.stable())
+                    .as("stable() must equal name() for %s", code)
+                    .isEqualTo(code.name());
+        }
     }
 
     @Test
     void helmExceptionAcceptsRegisteredCode() {
-        assertThat(new TestHelmException("AGENT_NOT_FOUND", "m", Map.of(), Map.of()).code())
+        assertThat(new TestHelmException(ErrorCode.AGENT_NOT_FOUND, "m", Map.of(), Map.of()).code())
                 .isEqualTo("AGENT_NOT_FOUND");
     }
 
     @Test
-    void errorCodeConstructorProducesStableString() {
-        assertThat(new TestHelmException(ErrorCode.RATE_LIMITED, "m", Map.of(), Map.of()).code())
-                .isEqualTo("RATE_LIMITED");
+    void helmExceptionChainsCauseThroughSuperConstructor() {
+        Throwable cause = new IllegalStateException("upstream");
+        TestHelmException ex = new TestHelmException(ErrorCode.RATE_LIMITED, "m", Map.of(), Map.of(), cause);
+
+        assertThat(ex.code()).isEqualTo("RATE_LIMITED");
+        assertThat(ex.getCause()).isSameAs(cause);
     }
 
     private static final class TestHelmException extends HelmException {
-        TestHelmException(String code, String message, Map<String, Object> details, Map<String, Object> dev) {
+        TestHelmException(ErrorCode code, String message, Map<String, Object> details, Map<String, Object> dev) {
             super(code, message, details, dev);
         }
 
-        TestHelmException(ErrorCode code, String message, Map<String, Object> details, Map<String, Object> dev) {
-            super(code, message, details, dev);
+        TestHelmException(
+                ErrorCode code, String message, Map<String, Object> details, Map<String, Object> dev, Throwable cause) {
+            super(code, message, details, dev, cause);
         }
     }
 }

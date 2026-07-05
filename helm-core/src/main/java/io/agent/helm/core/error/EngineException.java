@@ -12,4 +12,13 @@ public abstract class EngineException extends HelmException {
             ErrorCode code, String message, Map<String, Object> details, Map<String, Object> developerDetails) {
         super(code, message, details, developerDetails);
     }
+
+    protected EngineException(
+            ErrorCode code,
+            String message,
+            Map<String, Object> details,
+            Map<String, Object> developerDetails,
+            Throwable cause) {
+        super(code, message, details, developerDetails, cause);
+    }
 }

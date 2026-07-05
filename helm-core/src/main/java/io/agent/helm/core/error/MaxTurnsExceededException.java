@@ -8,4 +8,9 @@ public final class MaxTurnsExceededException extends EngineException {
             String message, Map<String, Object> details, Map<String, Object> developerDetails) {
         super(ErrorCode.MAX_TURNS_EXCEEDED, message, details, developerDetails);
     }
+
+    public MaxTurnsExceededException(
+            String message, Map<String, Object> details, Map<String, Object> developerDetails, Throwable cause) {
+        super(ErrorCode.MAX_TURNS_EXCEEDED, message, details, developerDetails, cause);
+    }
 }

@@ -14,6 +14,7 @@ public record AgentConfig(ModelRef model, String instructions, List<Tool<?, ?>> 
         model = Objects.requireNonNull(model, "model");
         instructions = instructions == null ? "" : instructions;
         tools = validateTools(tools);
+        sandbox = Objects.requireNonNullElse(sandbox, Sandbox.disabled());
     }
 
     public static Builder builder() {
@@ -65,7 +66,7 @@ public record AgentConfig(ModelRef model, String instructions, List<Tool<?, ?>> 
         }
 
         public AgentConfig build() {
-            return new AgentConfig(model, instructions, tools, sandbox);
+            return new AgentConfig(model, instructions, tools, sandbox == null ? Sandbox.disabled() : sandbox);
         }
     }
 }

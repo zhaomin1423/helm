@@ -8,4 +8,9 @@ public final class RateLimitExceededException extends HelmException {
             String message, Map<String, Object> details, Map<String, Object> developerDetails) {
         super(ErrorCode.RATE_LIMITED, message, details, developerDetails);
     }
+
+    public RateLimitExceededException(
+            String message, Map<String, Object> details, Map<String, Object> developerDetails, Throwable cause) {
+        super(ErrorCode.RATE_LIMITED, message, details, developerDetails, cause);
+    }
 }

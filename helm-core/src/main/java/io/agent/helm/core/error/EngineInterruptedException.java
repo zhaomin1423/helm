@@ -8,4 +8,9 @@ public final class EngineInterruptedException extends EngineException {
             String message, Map<String, Object> details, Map<String, Object> developerDetails) {
         super(ErrorCode.ENGINE_INTERRUPTED, message, details, developerDetails);
     }
+
+    public EngineInterruptedException(
+            String message, Map<String, Object> details, Map<String, Object> developerDetails, Throwable cause) {
+        super(ErrorCode.ENGINE_INTERRUPTED, message, details, developerDetails, cause);
+    }
 }

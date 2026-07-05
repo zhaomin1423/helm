@@ -22,6 +22,7 @@ public enum ErrorCode {
     // Engine / context
     CONTEXT_OVERFLOW,
     SESSION_BUSY,
+    SESSION_CONFLICT,
     ENGINE_TIMEOUT,
     MAX_TURNS_EXCEEDED,
     MODEL_STREAM_FAILED,
@@ -38,6 +39,9 @@ public enum ErrorCode {
     // Persistence
     PERSISTENCE_ERROR,
 
+    // Workflow execution
+    WORKFLOW_FAILED,
+
     // Generic / uncategorized
     INTERNAL_ERROR,
 
@@ -51,7 +55,12 @@ public enum ErrorCode {
     LEASE_LOST,
     RECOVERY_FAILED;
 
-    /** Returns the stable string form persisted in events and returned to HTTP clients. */
+    /**
+     * Returns the stable string form persisted in events and returned to HTTP clients. Implementations must keep this
+     * equal to {@link #name()} for every enum constant defined in this class; the contract is pinned by
+     * {@code ErrorCodeContractTest}. The method exists as the extensibility hook so future major versions could remap
+     * codes without breaking the persisted identifier format.
+     */
     public String stable() {
         return name();
     }
