@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.agent.helm</groupId>
+    <artifactId>helm</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>helm-bom</artifactId>
+  <packaging>pom</packaging>
+  <name>Helm BOM</name>
+  <description>Bill of materials: import to align all Helm module versions.</description>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-agent-engine</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-cli</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-http-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-http-servlet</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-observability-logging</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-persistence-jdbc</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-provider-anthropic</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-provider-openai</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-runtime</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-sandbox-local</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agent.helm</groupId>
+        <artifactId>helm-spring-boot-starter</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>

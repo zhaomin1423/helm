@@ -2,7 +2,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>io.agent</groupId>
+  <groupId>io.agent.helm</groupId>
   <artifactId>helm</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
@@ -23,6 +23,10 @@
     <module>helm-spring-boot-starter</module>
     <module>helm-persistence-jdbc</module>
     <module>helm-observability-logging</module>
+    <module>helm-observability-opentelemetry</module>
+    <module>helm-memory-semantic</module>
+    <module>helm-client</module>
+    <module>helm-bom</module>
     <module>examples/coding-workflow</module>
     <module>examples/memory-session-example</module>
     <module>examples/spring-boot-example</module>
@@ -44,10 +48,18 @@
     <flyway.version>10.22.0</flyway.version>
     <h2.version>2.3.232</h2.version>
     <slf4j.version>2.0.16</slf4j.version>
+    <otel.version>1.40.0</otel.version>
   </properties>
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-bom</artifactId>
+        <version>${otel.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson.core</groupId>
         <artifactId>jackson-annotations</artifactId>
