@@ -114,7 +114,7 @@ helm/
   helm-sandbox-remote/             ◯
   helm-http-core/                  ✓
   helm-http-servlet/               ✓
-  helm-client/                     ◯
+  helm-client/                     ✓
   helm-cli/                        ✓
   helm-spring-boot-starter/        ✓
   helm-persistence-jdbc/           ✓
