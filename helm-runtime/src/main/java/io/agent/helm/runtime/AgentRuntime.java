@@ -30,6 +30,7 @@ import io.agent.helm.core.store.AgentSessionState;
 import io.agent.helm.core.store.OperationRecord;
 import io.agent.helm.core.store.OperationStatus;
 import io.agent.helm.core.store.RuntimeStore;
+import io.agent.helm.core.store.WorkQueue;
 import io.agent.helm.core.tool.Tool;
 import io.agent.helm.core.tool.ToolContext;
 import io.agent.helm.core.tool.ToolDescriptor;
@@ -73,6 +74,8 @@ public final class AgentRuntime {
     private final HelmAuthorizer authorizer;
     private final RateLimiter rateLimiter;
     private final HelmSecurityContext defaultSecurityContext;
+    private final java.util.concurrent.ExecutorService executor;
+    private final WorkQueue workQueue;
     private final AgentEngine engine = new AgentEngine();
     private final ConcurrentMap<String, Boolean> activeSessions = new ConcurrentHashMap<>();
 
@@ -84,7 +87,9 @@ public final class AgentRuntime {
             int maxSessionMessages,
             HelmAuthorizer authorizer,
             RateLimiter rateLimiter,
-            HelmSecurityContext defaultSecurityContext) {
+            HelmSecurityContext defaultSecurityContext,
+            java.util.concurrent.ExecutorService executor,
+            WorkQueue workQueue) {
         Map<String, AgentDefinition> agentMap = new LinkedHashMap<>();
         for (AgentDefinition agent : agents) {
             agentMap.put(agent.name(), agent);
@@ -98,6 +103,8 @@ public final class AgentRuntime {
         this.rateLimiter = rateLimiter == null ? RateLimiter.unlimited() : rateLimiter;
         this.defaultSecurityContext =
                 defaultSecurityContext == null ? HelmSecurityContext.anonymous() : defaultSecurityContext;
+        this.executor = executor;
+        this.workQueue = workQueue;
     }
 
     public static Builder builder() {
@@ -277,6 +284,9 @@ public final class AgentRuntime {
 
     public OperationHandle dispatch(AgentPromptRequest request) {
         String operationId = "op_" + UUID.randomUUID();
+        if (executor != null) {
+            return dispatchDurable(request, operationId);
+        }
         try {
             executePrompt(request, operationId, defaultSecurityContext);
         } catch (RuntimeException e) {
@@ -286,6 +296,31 @@ public final class AgentRuntime {
             return new OperationHandle(operationId, status);
         }
         return new OperationHandle(operationId, OperationStatus.SUCCEEDED);
+    }
+
+    /** @Preview durable async dispatch: enqueue + execute on the executor; lease/recovery remain post-GA. */
+    @io.agent.helm.core.annotation.Preview
+    private OperationHandle dispatchDurable(AgentPromptRequest request, String operationId) {
+        String sessionId = sessionId(request.agentName(), request.instanceId(), request.sessionName());
+        Instant now = Instant.now();
+        store.saveOperation(new OperationRecord(
+                operationId, sessionId, "PROMPT", OperationStatus.QUEUED, request.text(), null, Map.of(), now, null));
+        if (workQueue != null) {
+            workQueue.enqueue(operationId, sessionId);
+        }
+        executor.execute(() -> {
+            try {
+                executePrompt(request, operationId, defaultSecurityContext);
+                if (workQueue != null) {
+                    workQueue.complete(operationId, OperationStatus.SUCCEEDED);
+                }
+            } catch (RuntimeException e) {
+                if (workQueue != null) {
+                    workQueue.complete(operationId, OperationStatus.FAILED);
+                }
+            }
+        });
+        return new OperationHandle(operationId, OperationStatus.QUEUED);
     }
 
     public Optional<OperationRecord> getOperation(String operationId) {
@@ -675,6 +710,8 @@ public final class AgentRuntime {
         private HelmAuthorizer authorizer;
         private RateLimiter rateLimiter;
         private HelmSecurityContext defaultSecurityContext;
+        private java.util.concurrent.ExecutorService executor;
+        private WorkQueue workQueue;
 
         public Builder agent(AgentDefinition agent) {
             agents.add(Objects.requireNonNull(agent, "agent"));
@@ -730,6 +767,14 @@ public final class AgentRuntime {
             return this;
         }
 
+        /** Enables durable async dispatch: operations are enqueued and executed on the executor. @Preview */
+        @io.agent.helm.core.annotation.Preview
+        public Builder durable(java.util.concurrent.ExecutorService executor, WorkQueue workQueue) {
+            this.executor = Objects.requireNonNull(executor, "executor");
+            this.workQueue = Objects.requireNonNull(workQueue, "workQueue");
+            return this;
+        }
+
         public AgentRuntime build() {
             return new AgentRuntime(
                     agents,
@@ -739,7 +784,9 @@ public final class AgentRuntime {
                     maxSessionMessages,
                     authorizer,
                     rateLimiter,
-                    defaultSecurityContext);
+                    defaultSecurityContext,
+                    executor,
+                    workQueue);
         }
     }
 }
