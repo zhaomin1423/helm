@@ -3,9 +3,9 @@ package io.agent.helm.client;
 import java.time.Duration;
 
 /**
- * Retry policy for {@link JdkHttpTransport}. Retries are attempted only on idempotent methods (GET, plus POST
- * dispatch/invoke when explicitly enabled). {@code 429} honors {@code Retry-After}; {@code 408}/{@code 503}/{@code 504}
- * and {@link java.io.IOException} are retried with exponential backoff.
+ * Retry policy for {@link JdkHttpTransport}. Retries are attempted only on idempotent methods (GET and HEAD);
+ * non-idempotent methods (POST, PUT, DELETE) are never retried. {@code 429} honors {@code Retry-After};
+ * {@code 408}/{@code 503}/{@code 504} and {@link java.io.IOException} are retried with exponential backoff.
  *
  * @param maxAttempts maximum number of attempts (including the first; e.g. 3 = 1 initial + 2 retries).
  * @param initialBackoff base backoff for the first retry.

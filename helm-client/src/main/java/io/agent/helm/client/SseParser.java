@@ -6,6 +6,7 @@ import io.agent.helm.core.agent.PromptStreamEvent;
 import io.agent.helm.core.model.TokenUsage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * Parses {@code text/event-stream} into {@link PromptStreamEvent}s.
@@ -18,8 +19,13 @@ import java.util.List;
  * Jackson type-info (core has no Jackson dependency), the parser inspects the JSON fields to select the subtype rather
  * than relying on polymorphic deserialization — so it works regardless of whether the producer added a type
  * discriminator.
+ *
+ * <p>Malformed JSON payloads are logged at {@link java.util.logging.Level#WARNING} and skipped (the frame is dropped
+ * rather than silently rewritten as a {@link PromptStreamEvent.ContentDelta}).
  */
 final class SseParser {
+
+    private static final Logger LOG = Logger.getLogger(SseParser.class.getName());
 
     private final ObjectMapper mapper;
 
@@ -83,7 +89,12 @@ final class SseParser {
         return events;
     }
 
-    private PromptStreamEvent parseFrame(String frame) {
+    /**
+     * Parses a single SSE frame payload into a {@link PromptStreamEvent}. Returns {@code null} if the payload is
+     * malformed JSON or does not match any known event shape; the failure is logged so operators can diagnose protocol
+     * drift without the frame being silently rewritten.
+     */
+    PromptStreamEvent parseFrame(String frame) {
         try {
             JsonNode node = mapper.readTree(frame);
             if (node.has("operationId") && node.has("totalUsage")) {
@@ -126,9 +137,11 @@ final class SseParser {
             if (node.has("text")) {
                 return new PromptStreamEvent.ContentDelta(node.path("text").asText());
             }
-        } catch (Exception ignored) {
-            // not JSON — fall through to raw text delta
+            LOG.warning("Unrecognized SSE frame shape; dropping: " + frame);
+            return null;
+        } catch (Exception e) {
+            LOG.warning("Failed to parse SSE frame as JSON; dropping: " + frame + " (" + e.getMessage() + ")");
+            return null;
         }
-        return new PromptStreamEvent.ContentDelta(frame);
     }
 }

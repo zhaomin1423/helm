@@ -11,14 +11,12 @@ import io.agent.helm.core.store.OperationRecord;
 import io.agent.helm.core.store.WorkflowRunRecord;
 import io.agent.helm.runtime.OperationHandle;
 import io.agent.helm.runtime.WorkflowRunHandle;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Flow;
-import java.util.concurrent.SubmissionPublisher;
 
 /**
  * Default {@link HelmClient} implementation. Wires {@link HttpTransport} to {@link ClientErrorMapper} and
@@ -29,20 +27,23 @@ final class DefaultHelmClient implements HelmClient {
     private final HttpTransport transport;
     private final ObjectMapper mapper;
     private final ClientErrorMapper errors;
-    private final SseParser sse;
 
     DefaultHelmClient(HttpTransport transport, ObjectMapper mapper) {
         this.transport = transport;
         this.mapper = mapper;
         this.errors = new ClientErrorMapper(mapper);
-        this.sse = new SseParser(mapper);
+    }
+
+    @Override
+    public void close() {
+        transport.close();
     }
 
     @Override
     public PromptResult prompt(String agent, String instance, String session, String text) {
         String path = "/agents/" + enc(agent) + "/instances/" + enc(instance) + "/sessions/" + enc(session) + "/prompt";
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("text", text);
+        body.put("text", text == null ? "" : text);
         RawResponse response = transport.send("POST", path, body);
         ensureSuccess(response);
         try {
@@ -157,20 +158,40 @@ final class DefaultHelmClient implements HelmClient {
         ensureSuccess(response);
     }
 
-    @SuppressWarnings("unchecked")
     @Override
-    public <I, O> WorkflowRunHandle<O> invokeWorkflow(String workflow, I input) {
+    public <I, O> WorkflowRunHandle<O> invokeWorkflow(String workflow, I input, Class<O> outputType) {
+        JsonNode root = invokeWorkflowRaw(workflow, input);
+        JsonNode resultNode = root.path("result");
+        String runId = root.path("runId").asText();
+        try {
+            O result = mapper.treeToValue(resultNode, outputType);
+            return new WorkflowRunHandle<>(runId, result);
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to parse workflow invoke response: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public <I, O> WorkflowRunHandle<O> invokeWorkflow(String workflow, I input, TypeReference<O> outputType) {
+        JsonNode root = invokeWorkflowRaw(workflow, input);
+        JsonNode resultNode = root.path("result");
+        String runId = root.path("runId").asText();
+        try {
+            O result = mapper.convertValue(resultNode, outputType);
+            return new WorkflowRunHandle<>(runId, result);
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to parse workflow invoke response: " + e.getMessage(), e);
+        }
+    }
+
+    private <I> JsonNode invokeWorkflowRaw(String workflow, I input) {
         String path = "/workflows/" + enc(workflow) + "/invoke";
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("input", input);
         RawResponse response = transport.send("POST", path, body);
         ensureSuccess(response);
         try {
-            JsonNode node = mapper.readTree(response.body());
-            String runId = node.path("runId").asText();
-            JsonNode resultNode = node.path("result");
-            O result = (O) mapper.treeToValue(resultNode, Object.class);
-            return new WorkflowRunHandle<>(runId, result);
+            return mapper.readTree(response.body());
         } catch (Exception e) {
             throw new IllegalStateException("failed to parse workflow invoke response: " + e.getMessage(), e);
         }
@@ -209,20 +230,13 @@ final class DefaultHelmClient implements HelmClient {
         String path = "/agents/" + enc(agent) + "/instances/" + enc(instance) + "/sessions/" + enc(session)
                 + "/prompt/stream";
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("text", text);
-        SubmissionPublisher<PromptStreamEvent> publisher = new SubmissionPublisher<>();
-        RawResponse response = transport.sendStream("POST", path, body);
+        body.put("text", text == null ? "" : text);
+        StreamResponse response = transport.sendStream("POST", path, body);
         if (response.status() >= 400) {
-            publisher.closeExceptionally(errors.toException(response));
-            return publisher;
+            // Error bodies are small; collect synchronously and close exceptionally with the mapped error.
+            return new ErrorStreamPublisher(response, errors);
         }
-        List<PromptStreamEvent> events = sse.parse(response.body());
-        // Drain synchronously into the publisher; subscribers receive events on the publisher's executor.
-        for (PromptStreamEvent event : events) {
-            publisher.submit(event);
-        }
-        publisher.close();
-        return publisher;
+        return new SseStreamPublisher(response.lines(), mapper);
     }
 
     private void ensureSuccess(RawResponse response) {
@@ -240,7 +254,30 @@ final class DefaultHelmClient implements HelmClient {
         }
     }
 
+    /**
+     * Percent-encodes a single URL path segment per RFC 3986. Unreserved characters ({@code A-Z a-z 0-9 - _ . ~}) are
+     * left as-is; every other byte (including space and {@code /}) is encoded as {@code %HH}. This is the correct
+     * encoding for path segments — {@link java.net.URLEncoder} is for form bodies and turns spaces into {@code +}.
+     */
     private static String enc(String segment) {
-        return URLEncoder.encode(segment == null ? "" : segment, StandardCharsets.UTF_8);
+        if (segment == null || segment.isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(segment.length());
+        for (byte b : segment.getBytes(StandardCharsets.UTF_8)) {
+            int c = b & 0xFF;
+            if (c >= 'a' && c <= 'z'
+                    || c >= 'A' && c <= 'Z'
+                    || c >= '0' && c <= '9'
+                    || c == '-'
+                    || c == '_'
+                    || c == '.'
+                    || c == '~') {
+                out.append((char) c);
+            } else {
+                out.append(String.format("%%%02X", c));
+            }
+        }
+        return out.toString();
     }
 }

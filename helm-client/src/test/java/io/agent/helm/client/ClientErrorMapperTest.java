@@ -111,6 +111,21 @@ final class ClientErrorMapperTest {
     }
 
     @Test
+    void unmappedServerCodePreservedInDetailsServerCode() {
+        HelmException exception = map(500, "SOMETHING_NEW", "unknown failure", Map.of("traceId", "abc"));
+        assertThat(exception.code()).isEqualTo("INTERNAL_ERROR");
+        assertThat(exception.details()).containsEntry("serverCode", "SOMETHING_NEW");
+        assertThat(exception.details()).containsEntry("traceId", "abc");
+    }
+
+    @Test
+    void internalErrorCodeAlsoPreservesServerCode() {
+        HelmException exception = map(500, "INTERNAL_ERROR", "kaboom", Map.of());
+        assertThat(exception.code()).isEqualTo("INTERNAL_ERROR");
+        assertThat(exception.details()).containsEntry("serverCode", "INTERNAL_ERROR");
+    }
+
+    @Test
     void isNotFoundReturnsTrueForGeneric404NotFound() {
         RawResponse response = new RawResponse(404, errorBody("NOT_FOUND", "missing", Map.of()), Map.of());
         assertThat(errorMapper.isNotFound(response)).isTrue();

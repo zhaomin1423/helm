@@ -5,18 +5,22 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agent.helm.core.error.AgentNotFoundException;
 import io.agent.helm.core.error.AuthorizationException;
 import io.agent.helm.core.error.ContextOverflowException;
+import io.agent.helm.core.error.ErrorCode;
 import io.agent.helm.core.error.HelmException;
 import io.agent.helm.core.error.ProviderException;
+import io.agent.helm.core.error.ProviderNotFoundException;
 import io.agent.helm.core.error.RateLimitExceededException;
 import io.agent.helm.core.error.SessionBusyException;
 import io.agent.helm.core.error.ValidationException;
 import io.agent.helm.core.error.WorkflowNotFoundException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
  * Restores an HTTP error response ({@code {"error":{code,message,details}}}) to the matching {@link HelmException}
- * subclass. Passes through {@code code}/{@code details}; the {@code message} becomes the exception message. Unknown
- * codes fall back to an anonymous {@link HelmException} subclass with the literal code string when possible.
+ * subclass. Passes through {@code code}/{@code details}; the {@code message} becomes the exception message. Unmapped
+ * server codes fall back to {@link ErrorCode#INTERNAL_ERROR} with the original server code preserved in
+ * {@code details.serverCode} for operators.
  */
 final class ClientErrorMapper {
 
@@ -54,13 +58,24 @@ final class ClientErrorMapper {
             case "CONTEXT_OVERFLOW" -> new ContextOverflowException(message, details, Map.of());
             case "PROVIDER_RATE_LIMITED" -> new RateLimitExceededException(message, details, Map.of());
             case "RATE_LIMITED" -> new RateLimitExceededException(message, details, Map.of());
-            case "PROVIDER_TIMEOUT" -> new ProviderException(ProviderException.TIMEOUT, message, details, Map.of());
-            case "PROVIDER_ERROR" -> new ProviderException(ProviderException.CODE, message, details, Map.of());
-            case "PROVIDER_NOT_FOUND" -> new ProviderException("PROVIDER_NOT_FOUND", message, details, Map.of());
+            case "PROVIDER_TIMEOUT" -> new ProviderException(ErrorCode.PROVIDER_TIMEOUT, message, details, Map.of());
+            case "PROVIDER_ERROR" -> new ProviderException(ErrorCode.PROVIDER_ERROR, message, details, Map.of());
+            case "PROVIDER_NOT_FOUND" -> new ProviderNotFoundException(message, details, Map.of());
             case "UNAUTHORIZED" -> AuthorizationException.unauthorized(message, details);
             case "FORBIDDEN" -> AuthorizationException.forbidden(message, details);
-            default -> new HelmException("INTERNAL_ERROR", message, details, Map.of()) {};
+            default -> unmapped(code, message, details);
         };
+    }
+
+    /**
+     * Preserves the original server code in {@code details.serverCode} while mapping to the closest stable
+     * {@link ErrorCode}. The default choice is {@link ErrorCode#INTERNAL_ERROR}; specific unmapped codes that map more
+     * naturally to another registered code can be added here.
+     */
+    private HelmException unmapped(String serverCode, String message, Map<String, Object> details) {
+        Map<String, Object> merged = new LinkedHashMap<>(details);
+        merged.put("serverCode", serverCode);
+        return new HelmException(ErrorCode.INTERNAL_ERROR, message, merged, Map.of()) {};
     }
 
     ErrorBody parse(RawResponse response) {
@@ -79,6 +94,7 @@ final class ClientErrorMapper {
             JsonNode detailsNode = err.path("details");
             String code = codeNode.isMissingNode() ? "INTERNAL_ERROR" : codeNode.asText();
             String message = messageNode.isMissingNode() ? "" : messageNode.asText();
+            @SuppressWarnings("unchecked")
             Map<String, Object> details = mapper.convertValue(detailsNode, Map.class);
             if (details == null) {
                 details = Map.of();

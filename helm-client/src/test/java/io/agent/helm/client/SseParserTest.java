@@ -99,12 +99,20 @@ final class SseParserTest {
     }
 
     @Test
-    void unparseableJsonWrapsAsContentDelta() {
+    void malformedJsonIsDroppedNotRewrittenAsContentDelta() {
         String raw = "data: not-json\n\n";
+        List<PromptStreamEvent> events = parser.parse(raw);
+        // Malformed JSON is logged and dropped rather than silently rewritten as a ContentDelta.
+        assertThat(events).isEmpty();
+    }
+
+    @Test
+    void malformedJsonDoesNotSuppressSubsequentFrames() {
+        String raw = "data: not-json\n\ndata: {\"text\":\"ok\"}\n\n";
         List<PromptStreamEvent> events = parser.parse(raw);
         assertThat(events).hasSize(1);
         assertThat(events.get(0)).isInstanceOf(PromptStreamEvent.ContentDelta.class);
-        assertThat(((PromptStreamEvent.ContentDelta) events.get(0)).text()).isEqualTo("not-json");
+        assertThat(((PromptStreamEvent.ContentDelta) events.get(0)).text()).isEqualTo("ok");
     }
 
     @Test

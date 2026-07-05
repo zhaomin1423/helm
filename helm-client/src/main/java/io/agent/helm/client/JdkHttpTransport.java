@@ -11,12 +11,16 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.Flow;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * JDK 21 {@link java.net.http.HttpClient}-backed transport. Injects headers via the configured
  * {@link HelmClientConfig#headerInjector()}, serializes JSON bodies with the configured {@link ObjectMapper}, and
  * retries idempotent failures per {@link RetryPolicy}. Credentials and request bodies are never logged.
+ *
+ * <p>The {@link HttpClient} owns a connection pool and a selector/executor thread; {@link #close()} must be called when
+ * the transport is no longer needed to avoid leaking those resources until JVM exit.
  */
 final class JdkHttpTransport implements HttpTransport {
 
@@ -35,21 +39,38 @@ final class JdkHttpTransport implements HttpTransport {
 
     @Override
     public RawResponse send(String method, String path, Object body) {
-        return executeWithRetry(method, path, body, false);
+        return executeWithRetry(method, path, body);
     }
 
     @Override
-    public RawResponse sendStream(String method, String path, Object body) {
-        return executeWithRetry(method, path, body, true);
+    public StreamResponse sendStream(String method, String path, Object body) {
+        try {
+            return doSendStream(method, path, body);
+        } catch (IOException e) {
+            throw new RuntimeException("HTTP stream request failed: " + method + " " + path, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("HTTP stream request interrupted: " + method + " " + path, e);
+        }
     }
 
-    private RawResponse executeWithRetry(String method, String path, Object body, boolean stream) {
+    @Override
+    public void close() {
+        // Java 21 HttpClient implements AutoCloseable; close() shuts down the selector and executor.
+        try {
+            http.close();
+        } catch (Exception e) {
+            // Best-effort cleanup; swallow to avoid masking primary failures on close.
+        }
+    }
+
+    private RawResponse executeWithRetry(String method, String path, Object body) {
         RetryPolicy policy = config.retryPolicy();
         int maxAttempts = policy.maxAttempts();
         IOException lastIo = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                RawResponse response = doSendOnce(method, path, body, stream);
+                RawResponse response = doSendOnce(method, path, body);
                 if (attempt < maxAttempts && shouldRetry(response.status(), method)) {
                     Duration sleep = retryDelay(response, attempt);
                     sleep(sleep);
@@ -59,7 +80,13 @@ final class JdkHttpTransport implements HttpTransport {
             } catch (IOException e) {
                 lastIo = e;
                 if (attempt < maxAttempts) {
-                    sleep(backoff(attempt, policy));
+                    try {
+                        sleep(backoff(attempt, policy));
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(
+                                "HTTP request interrupted during retry backoff: " + method + " " + path, ie);
+                    }
                     continue;
                 }
                 throw new RuntimeException("HTTP request failed: " + method + " " + path, e);
@@ -74,16 +101,13 @@ final class JdkHttpTransport implements HttpTransport {
         throw new IllegalStateException("retry loop exited without response");
     }
 
-    private RawResponse doSendOnce(String method, String path, Object body, boolean stream)
-            throws IOException, InterruptedException {
+    private RawResponse doSendOnce(String method, String path, Object body) throws IOException, InterruptedException {
         URI uri = baseUrl.resolve(path);
-        HttpRequest.Builder req = HttpRequest.newBuilder(uri)
-                .timeout(config.requestTimeout())
-                .header("Accept", stream ? "text/event-stream" : "application/json")
-                .header("Content-Type", "application/json");
+        HttpRequest.Builder req = HttpRequest.newBuilder(uri).timeout(config.requestTimeout());
 
+        // The injector owns all headers, including Accept and Content-Type, so they appear exactly once.
         Map<String, String> baseHeaders = new LinkedHashMap<>();
-        baseHeaders.put("Accept", stream ? "text/event-stream" : "application/json");
+        baseHeaders.put("Accept", "application/json");
         baseHeaders.put("Content-Type", "application/json");
         Map<String, String> merged = config.headerInjector().apply(baseHeaders);
         for (Map.Entry<String, String> entry : merged.entrySet()) {
@@ -103,6 +127,39 @@ final class JdkHttpTransport implements HttpTransport {
             }
         });
         return new RawResponse(response.statusCode(), response.body() == null ? "" : response.body(), headers);
+    }
+
+    private StreamResponse doSendStream(String method, String path, Object body)
+            throws IOException, InterruptedException {
+        URI uri = baseUrl.resolve(path);
+        HttpRequest.Builder req = HttpRequest.newBuilder(uri).timeout(config.requestTimeout());
+
+        Map<String, String> baseHeaders = new LinkedHashMap<>();
+        baseHeaders.put("Accept", "text/event-stream");
+        baseHeaders.put("Content-Type", "application/json");
+        Map<String, String> merged = config.headerInjector().apply(baseHeaders);
+        for (Map.Entry<String, String> entry : merged.entrySet()) {
+            req.header(entry.getKey(), entry.getValue());
+        }
+
+        HttpRequest.BodyPublisher bodyPublisher = body == null
+                ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body), StandardCharsets.UTF_8);
+        req.method(method, bodyPublisher);
+
+        // sendAsync + ofPublisher() returns as soon as the response status/headers are available; the body publisher
+        // emits byte-buffer chunks incrementally as they arrive from the network. We transform those chunks into lines
+        // so callers can consume SSE frames without buffering the entire body.
+        HttpResponse<java.util.concurrent.Flow.Publisher<java.util.List<java.nio.ByteBuffer>>> response =
+                http.send(req.build(), BodyHandlers.ofPublisher());
+        Map<String, String> headers = new LinkedHashMap<>();
+        response.headers().map().forEach((k, v) -> {
+            if (!v.isEmpty()) {
+                headers.put(k, v.get(0));
+            }
+        });
+        Flow.Publisher<String> linePublisher = new LinePublisherAdapter(response.body());
+        return new StreamResponse(response.statusCode(), headers, linePublisher);
     }
 
     private static boolean shouldRetry(int status, String method) {
@@ -144,14 +201,10 @@ final class JdkHttpTransport implements HttpTransport {
         return result.compareTo(policy.maxBackoff()) > 0 ? policy.maxBackoff() : result;
     }
 
-    private static void sleep(Duration duration) {
+    private static void sleep(Duration duration) throws InterruptedException {
         if (duration.isZero() || duration.isNegative()) {
             return;
         }
-        try {
-            Thread.sleep(duration);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        Thread.sleep(duration);
     }
 }

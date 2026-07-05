@@ -1,5 +1,6 @@
 package io.agent.helm.client;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import io.agent.helm.core.agent.PromptResult;
 import io.agent.helm.core.agent.PromptStreamEvent;
 import io.agent.helm.core.annotation.Preview;
@@ -22,8 +23,18 @@ import java.util.concurrent.Flow;
  * {@link io.agent.helm.core.error.HelmException} subclasses with code/details pass-through. {@code 404 NOT_FOUND} on
  * {@link #getOperation(String)} / {@link #getRun(String)} / {@link #getSession(String)} is mapped to
  * {@link Optional#empty()} rather than thrown.
+ *
+ * <p>The client owns an underlying {@link java.net.http.HttpClient} with a connection pool and executor thread.
+ * Long-lived callers should reuse a single {@code HelmClient} instance and {@link #close()} it when done to release
+ * those resources; short-lived callers can use try-with-resources:
+ *
+ * <pre>{@code
+ * try (HelmClient client = HelmClient.builder().baseUrl(baseUrl).build()) {
+ *     client.prompt("echo", "i1", "s1", "hi");
+ * }
+ * }</pre>
  */
-public interface HelmClient {
+public interface HelmClient extends AutoCloseable {
 
     // —— Agent ——
 
@@ -50,7 +61,24 @@ public interface HelmClient {
 
     // —— Workflow ——
 
-    <I, O> WorkflowRunHandle<O> invokeWorkflow(String workflow, I input);
+    /**
+     * Invokes a workflow and deserializes the result into the given type.
+     *
+     * @param workflow workflow name (URL path segment).
+     * @param input workflow input payload.
+     * @param outputType {@link Class} describing the result type; the JSON result node is deserialized into this type.
+     */
+    <I, O> WorkflowRunHandle<O> invokeWorkflow(String workflow, I input, Class<O> outputType);
+
+    /**
+     * Invokes a workflow and deserializes the result into the given type. Use this overload when the result type is
+     * generic (e.g. {@code List<Foo>}); the {@link TypeReference} preserves the full generic signature.
+     *
+     * @param workflow workflow name (URL path segment).
+     * @param input workflow input payload.
+     * @param outputType {@link TypeReference} describing the result type.
+     */
+    <I, O> WorkflowRunHandle<O> invokeWorkflow(String workflow, I input, TypeReference<O> outputType);
 
     Optional<WorkflowRunRecord> getRun(String runId);
 
@@ -59,12 +87,17 @@ public interface HelmClient {
     // —— Streaming ——
 
     /**
-     * Streams prompt events from {@code POST
-     * /agents/{agent}/instances/{instance}/sessions/{session}/prompt/stream}. @Preview the streaming route is planned
-     * but not yet registered by {@code HelmHttpRoutes}; the SSE parsing surface is being validated.
+     * Streams prompt events from {@code POST /agents/{agent}/instances/{instance}/sessions/{session}/prompt/stream}.
+     * Events are delivered incrementally as SSE frames arrive; subscribers receive the first event before the body is
+     * fully buffered. @Preview the streaming route is planned but not yet registered by {@code HelmHttpRoutes}; the SSE
+     * parsing surface is being validated.
      */
     @Preview
     Flow.Publisher<PromptStreamEvent> promptStream(String agent, String instance, String session, String text);
+
+    /** Releases the underlying HTTP client, connection pool, and executor. Idempotent. */
+    @Override
+    void close();
 
     static HelmClientBuilder builder() {
         return new HelmClientBuilder();
