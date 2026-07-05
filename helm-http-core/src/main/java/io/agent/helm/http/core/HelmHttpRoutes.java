@@ -54,9 +54,34 @@ public final class HelmHttpRoutes {
                 .route("GET", "/operations/{id}", getOperationHandler(agentRuntime))
                 .route("GET", "/operations/{id}/events", getOperationEventsHandler(agentRuntime))
                 .route("GET", "/sessions/{id}/operations", sessionOperationsHandler(agentRuntime))
+                .route("GET", "/sessions", listSessionsHandler(agentRuntime))
+                .route("GET", "/sessions/{id}", getSessionHandler(agentRuntime))
+                .route("DELETE", "/sessions/{id}", resetSessionHandler(agentRuntime))
+                .route("GET", "/operations", listOperationsHandler(agentRuntime))
                 .route("GET", "/workflow-runs/{id}", getRunHandler(workflowRuntime))
                 .route("GET", "/workflows/{workflow}/runs", workflowRunsHandler(workflowRuntime))
                 .build();
+    }
+
+    static HelmHttpHandler listSessionsHandler(AgentRuntime runtime) {
+        return request -> HelmHttpResponse.ok(toJson(Map.of("sessions", runtime.listSessions())));
+    }
+
+    static HelmHttpHandler getSessionHandler(AgentRuntime runtime) {
+        return request -> runtime.getSession(request.pathParam("id"))
+                .<HelmHttpResponse>map(session -> HelmHttpResponse.ok(toJson(session)))
+                .orElseGet(() -> HttpErrors.errorResponse(404, "SESSION_NOT_FOUND", "session not found", Map.of()));
+    }
+
+    static HelmHttpHandler resetSessionHandler(AgentRuntime runtime) {
+        return request -> {
+            runtime.resetSession(request.pathParam("id"));
+            return HelmHttpResponse.ok(toJson(Map.of("reset", true)));
+        };
+    }
+
+    static HelmHttpHandler listOperationsHandler(AgentRuntime runtime) {
+        return request -> HelmHttpResponse.ok(toJson(Map.of("operations", runtime.listOperations())));
     }
 
     static HelmHttpHandler promptHandler(AgentRuntime runtime) {

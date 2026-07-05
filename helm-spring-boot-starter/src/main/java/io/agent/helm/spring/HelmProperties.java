@@ -6,6 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "helm")
 public class HelmProperties {
     private Http http = new Http();
+    private int maxSessionMessages = 0;
 
     public Http getHttp() {
         return http;
@@ -13,6 +14,15 @@ public class HelmProperties {
 
     public void setHttp(Http http) {
         this.http = http;
+    }
+
+    /** Bounds session history; 0 keeps full history. */
+    public int getMaxSessionMessages() {
+        return maxSessionMessages;
+    }
+
+    public void setMaxSessionMessages(int maxSessionMessages) {
+        this.maxSessionMessages = maxSessionMessages;
     }
 
     public static class Http {
