@@ -30,7 +30,20 @@ public final class HelmHttpRoutes {
         return router(agentRuntime, workflowRuntime, null, null);
     }
 
-    /** Builds the standard router with per-route authorization; pass {@code null} authorizer to disable. */
+    /**
+     * Builds the standard router with per-route authorization; pass {@code null} authorizer to disable.
+     *
+     * <p><strong>Security context propagation (finding 8):</strong> the HTTP router authorizes each request against the
+     * {@link HelmSecurityContext} produced by the {@link SecurityContextExtractor}, but the underlying
+     * {@link AgentRuntime} entry points ({@code prompt}/{@code dispatch}) re-authorize against the runtime's
+     * {@code defaultSecurityContext}. The runtime does not currently expose a {@code prompt(request, securityContext)}
+     * entry point, so the HTTP-extracted context is not propagated into the runtime. When HTTP authorization is
+     * enabled, leave the {@code AgentRuntime}'s authorizer unconfigured (it defaults to {@code allowAll}) so the HTTP
+     * layer is the single authorization gate; the runtime's {@code defaultSecurityContext} still governs
+     * runtime-internal authorization (e.g. tool execution) and should be set to a service-level principal when needed.
+     * Double-authorization (HTTP authorizer + runtime authorizer) would authorize the HTTP call against the extracted
+     * principal but the runtime call against {@code anonymous}, producing confusing deny/allow outcomes.
+     */
     public static HelmHttpRouter router(
             AgentRuntime agentRuntime,
             WorkflowRuntime workflowRuntime,
@@ -106,9 +119,12 @@ public final class HelmHttpRoutes {
             java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
             java.util.concurrent.atomic.AtomicReference<Throwable> failure =
                     new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Flow.Subscription> subscriptionRef =
+                    new java.util.concurrent.atomic.AtomicReference<>();
             pub.subscribe(new java.util.concurrent.Flow.Subscriber<>() {
                 @Override
                 public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
+                    subscriptionRef.set(subscription);
                     subscription.request(Long.MAX_VALUE);
                 }
 
@@ -134,21 +150,46 @@ public final class HelmHttpRoutes {
                     done.countDown();
                 }
             });
+            boolean completed;
             try {
-                done.await(30, java.util.concurrent.TimeUnit.SECONDS);
+                completed = done.await(30, java.util.concurrent.TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                return HttpErrors.toResponse(new io.agent.helm.core.error.EngineInterruptedException(
+                        "Interrupted while streaming prompt", Map.of(), Map.of()));
+            } finally {
+                // Always cancel the subscription on exit (success, timeout, or interruption) so a slow publisher
+                // cannot keep producing into a dead subscriber.
+                cancelSubscription(subscriptionRef);
+            }
+            // If the publisher failed (or we never completed within the timeout), surface a non-200 error response
+            // instead of returning 200 with partial data.
+            Throwable failureCause = failure.get();
+            if (failureCause != null) {
+                return HttpErrors.toResponse(failureCause);
+            }
+            if (!completed) {
+                return HttpErrors.toResponse(new io.agent.helm.core.error.TurnTimeoutException(
+                        "Prompt stream timed out after 30s", Map.of("timeoutMs", 30000L), Map.of()));
             }
             return new HelmHttpResponse(200, Map.of("Content-Type", List.of("text/event-stream")), sse.toString());
         };
     }
 
+    private static void cancelSubscription(
+            java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Flow.Subscription> subscriptionRef) {
+        java.util.concurrent.Flow.Subscription current = subscriptionRef.getAndSet(null);
+        if (current != null) {
+            current.cancel();
+        }
+    }
+
     static HelmHttpHandler dispatchHandler(AgentRuntime runtime) {
         return request -> {
             JsonNode node = readObject(request.body());
-            String instance = node.path("instance").asText("");
-            String session = node.path("session").asText("");
-            String text = node.path("text").asText("");
+            String instance = readField(node, "instance");
+            String session = readField(node, "session");
+            String text = readField(node, "text");
             OperationHandle handle =
                     runtime.dispatch(new AgentPromptRequest(request.pathParam("agent"), instance, session, text));
             Map<String, Object> body = new LinkedHashMap<>();
@@ -218,10 +259,21 @@ public final class HelmHttpRoutes {
     }
 
     private static String readField(String body, String field) {
-        JsonNode node = readObject(body);
+        return readField(readObject(body), field);
+    }
+
+    private static String readField(JsonNode node, String field) {
         JsonNode value = node.path(field);
         if (value.isMissingNode()) {
             throw new ValidationException("missing field: " + field, Map.of("field", field), Map.of());
+        }
+        if (!value.isTextual()) {
+            // Reject non-string JSON values so {"text":123} or {"text":[]} fail validation instead of coercing to
+            // "123"/"" and silently driving an operation with wrong-shape input.
+            throw new ValidationException(
+                    "field must be a string: " + field,
+                    Map.of("field", field, "nodeType", value.getNodeType().toString()),
+                    Map.of());
         }
         return value.asText();
     }

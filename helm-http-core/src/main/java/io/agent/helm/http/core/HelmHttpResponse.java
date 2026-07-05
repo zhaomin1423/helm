@@ -6,7 +6,7 @@ import java.util.Map;
 /** Framework-neutral HTTP response: status, headers, and body text. */
 public record HelmHttpResponse(int status, Map<String, List<String>> headers, String body) {
     public HelmHttpResponse {
-        headers = Map.copyOf(headers);
+        headers = headers == null ? Map.of() : Map.copyOf(headers);
         body = body == null ? "" : body;
     }
 

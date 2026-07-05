@@ -45,7 +45,14 @@ public final class HelmHttpRouter {
             }
             HelmHttpRequest routed = new HelmHttpRequest(
                     request.method(), request.path(), params.get(), request.headers(), request.body());
-            HelmHttpResponse denied = authorize(routed);
+            // authorize() invokes the application-provided extractor/authorizer; wrap it in the same try/catch so a
+            // throwing extractor produces the unified JSON envelope instead of escaping to the container.
+            HelmHttpResponse denied;
+            try {
+                denied = authorize(routed);
+            } catch (Exception e) {
+                return HttpErrors.toResponse(e);
+            }
             if (denied != null) {
                 return denied;
             }
@@ -112,6 +119,16 @@ public final class HelmHttpRouter {
         }
 
         public HelmHttpRouter build() {
+            if (authorizer != null && extractor == null) {
+                throw new IllegalStateException(
+                        "securityContextExtractor is required when an authorizer is configured; otherwise the authorizer"
+                                + " would always see an anonymous context");
+            }
+            if (authorizer == null && extractor != null) {
+                throw new IllegalStateException(
+                        "authorizer is required when a securityContextExtractor is configured; an extractor without an"
+                                + " authorizer has no effect and indicates a misconfiguration");
+            }
             return new HelmHttpRouter(List.copyOf(routes), authorizer, extractor);
         }
     }
