@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.agent.helm.core.error.ContextOverflowException;
 import io.agent.helm.core.error.HelmException;
 import io.agent.helm.core.error.ProviderException;
 import io.agent.helm.core.message.ContentBlock;
@@ -276,7 +277,11 @@ public final class OpenAiProvider implements ModelProvider {
         return node;
     }
 
-    private ProviderException mapHttpError(int status, String body) {
+    private HelmException mapHttpError(int status, String body) {
+        if (status == 400 && body != null && body.contains("context_length_exceeded")) {
+            return ContextOverflowException.prompt(
+                    "OpenAI context length exceeded", Map.of("provider", providerId, "status", status));
+        }
         String code = ProviderException.CODE;
         if (status == 429) {
             code = ProviderException.RATE_LIMITED;
