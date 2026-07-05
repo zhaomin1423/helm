@@ -36,6 +36,34 @@ public abstract class RuntimeStoreContractTest {
     }
 
     @Test
+    void listSessionsSortedByCreatedAtAscending() {
+        RuntimeStore store = createStore();
+        store.saveSession(new AgentSessionState("s2", "agent", "instance-1", "later", 1, List.of(), T2, T2));
+        store.saveSession(new AgentSessionState("s1", "agent", "instance-1", "earlier", 1, List.of(), T1, T1));
+
+        assertThat(store.listSessions()).extracting(AgentSessionState::id).containsExactly("s1", "s2");
+    }
+
+    @Test
+    void deleteSessionRemovesSession() {
+        RuntimeStore store = createStore();
+        store.saveSession(new AgentSessionState("s1", "agent", "instance-1", "default", 1, List.of(), T1, T1));
+
+        store.deleteSession("s1");
+
+        assertThat(store.loadSession("s1")).isEmpty();
+        assertThat(store.listSessions()).isEmpty();
+    }
+
+    @Test
+    void deleteUnknownSessionIsNoOp() {
+        RuntimeStore store = createStore();
+        store.deleteSession("nope");
+
+        assertThat(store.listSessions()).isEmpty();
+    }
+
+    @Test
     void saveAndLoadOperation() {
         RuntimeStore store = createStore();
         OperationRecord op = new OperationRecord(
