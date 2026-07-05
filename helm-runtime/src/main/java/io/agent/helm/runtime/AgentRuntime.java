@@ -315,14 +315,18 @@ public final class AgentRuntime {
             workQueue.enqueue(operationId, sessionId);
         }
         executor.execute(() -> {
+            var claimed = workQueue != null
+                    ? workQueue.claim("worker", Duration.ofSeconds(60))
+                    : java.util.Optional.<WorkQueue.QueueItem>empty();
+            String leaseId = claimed.map(WorkQueue.QueueItem::leaseId).orElse(operationId);
             try {
                 executePrompt(request, operationId, defaultSecurityContext);
                 if (workQueue != null) {
-                    workQueue.complete(operationId, OperationStatus.SUCCEEDED);
+                    workQueue.complete(leaseId, OperationStatus.SUCCEEDED);
                 }
             } catch (RuntimeException e) {
                 if (workQueue != null) {
-                    workQueue.complete(operationId, OperationStatus.FAILED);
+                    workQueue.complete(leaseId, OperationStatus.FAILED);
                 }
             }
         });
