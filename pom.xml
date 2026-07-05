@@ -24,6 +24,7 @@
     <module>helm-persistence-jdbc</module>
     <module>helm-observability-logging</module>
     <module>examples/coding-workflow</module>
+    <module>examples/memory-session-example</module>
     <module>examples/spring-boot-example</module>
   </modules>
 

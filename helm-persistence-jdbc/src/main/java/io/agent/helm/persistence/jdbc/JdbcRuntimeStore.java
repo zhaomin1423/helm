@@ -79,6 +79,27 @@ public final class JdbcRuntimeStore implements RuntimeStore {
     }
 
     @Override
+    public List<AgentSessionState> listSessions() {
+        return queryList(
+                "SELECT id, agent_name, instance_id, session_name, version, messages, created_at, updated_at FROM helm_session ORDER BY created_at ASC",
+                ps -> {},
+                rs -> new AgentSessionState(
+                        rs.getString(1),
+                        rs.getString(2),
+                        rs.getString(3),
+                        rs.getString(4),
+                        rs.getLong(5),
+                        parseMessages(rs.getString(6)),
+                        toInstant(rs.getTimestamp(7)),
+                        toInstant(rs.getTimestamp(8))));
+    }
+
+    @Override
+    public void deleteSession(String sessionId) {
+        execute("DELETE FROM helm_session WHERE id = ?", ps -> ps.setString(1, sessionId));
+    }
+
+    @Override
     public Optional<OperationRecord> loadOperation(String id) {
         return queryOne(
                 "SELECT session_id, type, status, input, output, error, created_at, completed_at FROM helm_operation WHERE id = ?",

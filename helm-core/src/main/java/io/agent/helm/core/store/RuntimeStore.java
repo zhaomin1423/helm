@@ -9,6 +9,12 @@ public interface RuntimeStore {
 
     void saveSession(AgentSessionState session);
 
+    /** Lists all sessions, ordered by {@code createdAt} ascending. */
+    List<AgentSessionState> listSessions();
+
+    /** Deletes the session with the given id. Deleting an unknown id is a no-op. */
+    void deleteSession(String sessionId);
+
     void saveOperation(OperationRecord operation);
 
     Optional<OperationRecord> loadOperation(String operationId);

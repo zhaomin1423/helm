@@ -30,6 +30,18 @@ public final class InMemoryRuntimeStore implements RuntimeStore {
     }
 
     @Override
+    public List<AgentSessionState> listSessions() {
+        return sessions.values().stream()
+                .sorted(Comparator.comparing(AgentSessionState::createdAt))
+                .toList();
+    }
+
+    @Override
+    public void deleteSession(String sessionId) {
+        sessions.remove(sessionId);
+    }
+
+    @Override
     public void saveOperation(OperationRecord operation) {
         operations.put(operation.id(), operation);
     }
