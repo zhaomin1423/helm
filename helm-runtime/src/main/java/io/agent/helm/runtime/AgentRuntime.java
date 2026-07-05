@@ -40,6 +40,7 @@ import io.agent.helm.engine.AgentEngineResult;
 import io.agent.helm.engine.EngineEvent;
 import io.agent.helm.engine.EngineEventListener;
 import io.agent.helm.engine.ToolExecutor;
+import io.agent.helm.runtime.durable.LeaseManager;
 import io.agent.helm.runtime.internal.EventRedactor;
 import io.agent.helm.runtime.internal.ProviderRegistry;
 import io.agent.helm.runtime.internal.RuntimeErrorMapper;
@@ -76,6 +77,7 @@ public final class AgentRuntime {
     private final HelmSecurityContext defaultSecurityContext;
     private final java.util.concurrent.ExecutorService executor;
     private final WorkQueue workQueue;
+    private final LeaseManager leaseManager;
     private final AgentEngine engine = new AgentEngine();
     private final ConcurrentMap<String, Boolean> activeSessions = new ConcurrentHashMap<>();
 
@@ -105,6 +107,16 @@ public final class AgentRuntime {
                 defaultSecurityContext == null ? HelmSecurityContext.anonymous() : defaultSecurityContext;
         this.executor = executor;
         this.workQueue = workQueue;
+        if (executor != null && workQueue != null) {
+            this.leaseManager = new LeaseManager(
+                    workQueue,
+                    java.util.concurrent.Executors.newSingleThreadScheduledExecutor(),
+                    Duration.ofSeconds(10),
+                    this::recoverOperation);
+            this.leaseManager.start();
+        } else {
+            this.leaseManager = null;
+        }
     }
 
     public static Builder builder() {
@@ -314,23 +326,37 @@ public final class AgentRuntime {
         if (workQueue != null) {
             workQueue.enqueue(operationId, sessionId);
         }
-        executor.execute(() -> {
-            var claimed = workQueue != null
-                    ? workQueue.claim("worker", Duration.ofSeconds(60))
-                    : java.util.Optional.<WorkQueue.QueueItem>empty();
-            String leaseId = claimed.map(WorkQueue.QueueItem::leaseId).orElse(operationId);
-            try {
-                executePrompt(request, operationId, defaultSecurityContext);
-                if (workQueue != null) {
-                    workQueue.complete(leaseId, OperationStatus.SUCCEEDED);
-                }
-            } catch (RuntimeException e) {
-                if (workQueue != null) {
-                    workQueue.complete(leaseId, OperationStatus.FAILED);
-                }
+        executor.execute(() -> processOperation(request, operationId));
+        return new OperationHandle(operationId, OperationStatus.QUEUED);
+    }
+
+    private void processOperation(AgentPromptRequest request, String operationId) {
+        var claimed = workQueue != null
+                ? workQueue.claim("worker", Duration.ofSeconds(60))
+                : java.util.Optional.<WorkQueue.QueueItem>empty();
+        String leaseId = claimed.map(WorkQueue.QueueItem::leaseId).orElse(operationId);
+        try {
+            executePrompt(request, operationId, defaultSecurityContext);
+            if (workQueue != null) {
+                workQueue.complete(leaseId, OperationStatus.SUCCEEDED);
+            }
+        } catch (RuntimeException e) {
+            if (workQueue != null) {
+                workQueue.complete(leaseId, OperationStatus.FAILED);
+            }
+        }
+    }
+
+    /** Recovery: re-dispatch an operation whose lease expired. */
+    private void recoverOperation(String operationId) {
+        store.loadOperation(operationId).ifPresent(op -> {
+            String[] parts = op.sessionId().split(":", 3);
+            if (parts.length == 3) {
+                AgentPromptRequest request =
+                        new AgentPromptRequest(parts[0], parts[1], parts[2], String.valueOf(op.input()));
+                executor.execute(() -> processOperation(request, operationId));
             }
         });
-        return new OperationHandle(operationId, OperationStatus.QUEUED);
     }
 
     public Optional<OperationRecord> getOperation(String operationId) {
