@@ -2,6 +2,7 @@ package io.agent.helm.sandbox.local;
 
 import io.agent.helm.core.error.SandboxException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -9,6 +10,12 @@ import java.util.Map;
 final class SandboxPaths {
     private SandboxPaths() {}
 
+    /**
+     * Resolves {@code relativePath} against {@code root}, rejecting absolute paths, traversal sequences, and any
+     * symlink component. The returned path is normalized but NOT realized — callers that perform mutating operations
+     * must additionally invoke {@link #ensureWithinRealized(Path, Path)} immediately before the operation to close the
+     * TOCTOU window between this check and the file mutation.
+     */
     static Path resolveWithin(Path root, String relativePath) {
         if (relativePath == null) {
             throw new SandboxException("path must not be null", Map.of(), Map.of());
@@ -34,6 +41,31 @@ final class SandboxPaths {
             }
         }
         return resolved;
+    }
+
+    /**
+     * Closes the TOCTOU window between {@link #resolveWithin} and a mutating operation: resolves the real path of
+     * {@code resolved} (or its nearest existing ancestor when the leaf or an intermediate directory does not yet exist)
+     * and asserts it remains within {@code realRoot}. Mutating callers must invoke this immediately before the
+     * mutation.
+     */
+    static void ensureWithinRealized(Path root, Path resolved) {
+        Path realRoot = realPath(root);
+        // Walk up to the nearest existing component; toRealPath fails on non-existent paths.
+        Path toRealize = resolved;
+        while (toRealize != null && !Files.exists(toRealize, LinkOption.NOFOLLOW_LINKS)) {
+            toRealize = toRealize.getParent();
+        }
+        if (toRealize == null) {
+            return;
+        }
+        Path realized = realPath(toRealize);
+        if (!realized.startsWith(realRoot)) {
+            throw new SandboxException(
+                    "path escapes sandbox root (symlink race detected)",
+                    Map.of("path", String.valueOf(resolved)),
+                    Map.of());
+        }
     }
 
     private static Path realPath(Path path) {
