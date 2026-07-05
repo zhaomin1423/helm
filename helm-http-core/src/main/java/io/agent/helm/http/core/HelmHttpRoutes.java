@@ -3,6 +3,7 @@ package io.agent.helm.http.core;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agent.helm.core.agent.PromptResult;
+import io.agent.helm.core.agent.PromptStreamEvent;
 import io.agent.helm.core.error.ValidationException;
 import io.agent.helm.core.event.RuntimeEventRecord;
 import io.agent.helm.core.store.OperationRecord;
@@ -33,6 +34,10 @@ public final class HelmHttpRoutes {
                         "POST",
                         "/agents/{agent}/instances/{instance}/sessions/{session}/prompt",
                         promptHandler(agentRuntime))
+                .route(
+                        "POST",
+                        "/agents/{agent}/instances/{instance}/sessions/{session}/prompt/stream",
+                        promptStreamHandler(agentRuntime))
                 .route("POST", "/agents/{agent}/dispatch", dispatchHandler(agentRuntime))
                 .route("POST", "/workflows/{workflow}/invoke", invokeHandler(workflowRuntime))
                 .route("GET", "/operations/{id}", getOperationHandler(agentRuntime))
@@ -52,6 +57,53 @@ public final class HelmHttpRoutes {
             body.put("operationId", result.operationId());
             body.put("text", result.text());
             return HelmHttpResponse.ok(toJson(body));
+        };
+    }
+
+    /** Streams prompt events as Server-Sent Events ({@code text/event-stream}). @Preview incremental surface. */
+    static HelmHttpHandler promptStreamHandler(AgentRuntime runtime) {
+        return request -> {
+            String text = readField(request.body(), "text");
+            java.util.concurrent.Flow.Publisher<PromptStreamEvent> pub = runtime.promptStream(new AgentPromptRequest(
+                    request.pathParam("agent"), request.pathParam("instance"), request.pathParam("session"), text));
+            StringBuilder sse = new StringBuilder();
+            java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            pub.subscribe(new java.util.concurrent.Flow.Subscriber<>() {
+                @Override
+                public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
+                    subscription.request(Long.MAX_VALUE);
+                }
+
+                @Override
+                public void onNext(PromptStreamEvent event) {
+                    try {
+                        sse.append("data: ")
+                                .append(MAPPER.writeValueAsString(event))
+                                .append("\n\n");
+                    } catch (Exception ignored) {
+                        sse.append("data: {}\n\n");
+                    }
+                }
+
+                @Override
+                public void onError(Throwable throwable) {
+                    failure.set(throwable);
+                    done.countDown();
+                }
+
+                @Override
+                public void onComplete() {
+                    done.countDown();
+                }
+            });
+            try {
+                done.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return new HelmHttpResponse(200, Map.of("Content-Type", List.of("text/event-stream")), sse.toString());
         };
     }
 
