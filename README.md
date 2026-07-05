@@ -86,41 +86,42 @@ helm dev
 
 ## 架构概览
 
+模块实现状态：`✓` 已实现，`◯` 待实现（详见 [`docs/design/README.md`](docs/design/README.md)）。
+
 ```text
 Application code
-  -> AgentRuntime / WorkflowRuntime
-    -> HarnessFactory
-      -> ProviderRegistry
-      -> ToolRegistry
-      -> SkillRegistry
-      -> SandboxFactory
-    -> OperationRunner
-      -> AgentEngine
-        -> TurnRunner
-        -> ModelStreamNormalizer
-        -> ToolCallOrchestrator
-        -> ContextManager
-    -> RuntimeStore
-    -> EventBus
+  -> Client SDK ◯ / HTTP Servlet ✓ / CLI ✓
+    -> [HelmAuthorizer ◯] [RateLimiter ◯]
+      -> AgentRuntime ✓ / WorkflowRuntime ✓
+        -> registries (agent/workflow/tool/skill/provider) ✓
+        -> AgentEngine ✓（基础）/ hardening ◯
+          -> TurnRunner -> ModelProvider.stream ✓
+          -> ToolCallOrchestrator / ToolExecutor ✓
+        -> RuntimeStore ✓ / MemoryStore ✓ / EventBus ✓
+        -> admission / rate limiting ◯ -> durable queue ◯
 ```
 
-推荐模块结构：
+模块结构（`✓` 已实现，`◯` 待实现，对应 [`docs/design/`](docs/design/) 各组件方案）：
 
 ```text
 helm/
-  helm-core/
-  helm-agent-engine/
-  helm-runtime/
-  helm-http-core/
-  helm-http-servlet/
-  helm-cli/
-  helm-spring-boot-starter/
-  helm-provider-openai/
-  helm-provider-anthropic/
-  helm-sandbox-local/
-  helm-persistence-jdbc/
-  helm-observability-logging/
+  helm-core/                       ✓  契约层（+ authorizer SPI ◯、json schema 扩展 ◯）
+  helm-agent-engine/               ✓  执行引擎（+ hardening ◯、streaming 暴露 ◯）
+  helm-runtime/                    ✓  运行时（+ admission/rate limit ◯、durable ◯）
+  helm-provider-openai/            ✓
+  helm-provider-anthropic/         ✓
+  helm-sandbox-local/              ✓
+  helm-sandbox-remote/             ◯
+  helm-http-core/                  ✓
+  helm-http-servlet/               ✓
+  helm-client/                     ◯
+  helm-cli/                        ✓
+  helm-spring-boot-starter/        ✓
+  helm-persistence-jdbc/           ✓
+  helm-observability-logging/      ✓
+  helm-observability-opentelemetry/ ◯
   examples/
+  docs/design/                     组件级设计方案（11 篇）
 ```
 
 ## Agent Engine 边界
@@ -147,17 +148,23 @@ Helm 使用第一方 `helm-agent-engine` 承担模型运行时的核心职责，
 
 ## 路线图
 
-| 阶段 | 内容 |
-| --- | --- |
-| Milestone 1 | `helm-core`、`helm-agent-engine`、`helm-runtime`、`FakeProvider`、`InMemoryRuntimeStore` |
-| Milestone 2 | OpenAI / Anthropic provider、Skill loading、In-memory sandbox、Local sandbox |
-| Milestone 3 | HTTP routes、`helm dev`、`helm run`、run inspection |
-| Milestone 4 | Spring Boot starter、自动配置、bean discovery、示例项目 |
-| Milestone 5 | JDBC store、schema migrations、event persistence、logging observer |
+| 阶段 | 状态 | 内容 |
+| --- | --- | --- |
+| 系统设计 M1 | ✅ 完成 | `helm-core`、`helm-agent-engine`、`helm-runtime`、`FakeProvider`、`InMemoryRuntimeStore` |
+| 系统设计 M2 | ✅ 完成 | OpenAI / Anthropic provider、Skill loading、In-memory sandbox、Local sandbox |
+| 系统设计 M3 | ✅ 完成 | HTTP routes、`helm dev`、`helm run`、run inspection |
+| 系统设计 M4 | ✅ 完成 | Spring Boot starter、自动配置、bean discovery、示例项目 |
+| 系统设计 M5 | ✅ 完成 | JDBC store、schema migrations、event persistence、logging observer |
+| 缺口补齐 | ✅ 完成 | Memory 管理、Session 管理生命周期、历史裁剪（2026-07-05） |
+| 生产化 M0–M11 | 🟡 设计中 | 流式 API、engine hardening、JsonSchema 扩展、memory 语义检索、authorizer、client SDK、rate limiting、metrics/OTel、durable scale、release engineering、API governance —— 11 篇组件方案见 [`docs/design/`](docs/design/README.md) |
+
+长期计划与进度跟踪见 [`docs/roadmap.md`](docs/roadmap.md)。
 
 ## 文档
 
 - [Helm MVP 设计文档](docs/helm-mvp-design.md)
+- [组件设计方案](docs/design/README.md)：11 个待实现生产能力的逐组件设计
+- [生产路线图](docs/roadmap.md)
 
 ## 示例
 

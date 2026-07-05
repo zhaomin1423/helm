@@ -83,6 +83,8 @@ helm/
 
 仍留待后续 milestone 的生产能力：流式响应 API 暴露、并发/队列调度（M11）、rate limiting、authorizer 落地（M6）、metrics/OTel（M9）、remote sandbox（M11）、向量化语义记忆检索（当前 `MemoryStore.search` 为关键字匹配，SPI 已预留替换点）。
 
+这些留待后续的能力已逐组件给出可评审设计方案，见 [`docs/design/`](design/) 目录（共 11 篇：流式 API、engine hardening、JsonSchema 扩展、memory 语义检索、authorizer、HTTP client SDK、rate limiting、metrics/OTel、durable scale、release engineering、API governance）。
+
 ## 4. Milestone 总览
 
 状态取值：`proposed`、`active`、`blocked`、`complete`。
@@ -470,6 +472,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 
 | Date | Update |
 | --- | --- |
+| 2026-07-05 | 实现 11 个生产化组件设计：API governance（`ErrorCode` 注册表/`@Preview`/`@Experimental`/`RuntimeStore` 拆 `SessionStore`/`OperationStore`/`WorkflowRunStore`/`EventStore` 子接口/groupId 迁移 `io.agent.helm`/`helm-bom`/`docs/contracts/error-codes.md`）、JsonSchema 扩展（Map/enum/Optional/`@SchemaDescription`）、engine hardening（`EngineEvent`/`EngineEventListener` 桥接 `RuntimeEventRecord`、tool input/output 校验、token usage 聚合、`ContextOverflow` 三类、`EngineException` 层级替代裸 `IllegalStateException`）、streaming（`PromptStreamEvent` + `promptStream` `@Preview` + SSE route）、authorizer（`HelmSecurityContext`/`HelmAuthorizer`/`HelmAction`/`HelmResource` + AgentRuntime admission）、rate limiting（`RateLimiter`/`RateLimitKey` + admission）、memory 语义检索（`helm-memory-semantic`：`SemanticMemoryStore`/`EmbeddingProvider`/`EmbeddingStore`/`InMemoryEmbeddingStore`/`FakeEmbeddingProvider`）、HTTP client SDK（`helm-client`：`HelmClient`/`JdkHttpTransport`/`ClientErrorMapper`/`SseParser` + WireMock 测试）、metrics/OTel（`helm-observability-opentelemetry`：`OpenTelemetryRuntimeObserver` metrics+tracing/`@Redact`/`ContentCaptureLevel`）、release engineering（LICENSE Apache 2.0/`CHANGELOG`/`CONTRIBUTING`/`ci.yml`/`mvnw`/5 篇 adapter guides）、durable SPI 占位（`WorkQueue`/`TurnJournal` `@Preview` post-GA）。新增 3 模块 + `helm-bom`。`mvn verify` 全绿（20 模块）。 |
 | 2026-07-05 | 完成生产组件缺口分析并补齐 Memory/Session 管理：`helm-core` 新增 `MemoryRecord`/`MemoryStore` SPI 与 `MemoryStoreContractTest`，`RuntimeStore` 增加 `listSessions`/`deleteSession`；`helm-runtime` 新增 `InMemoryMemoryStore`、内置 `save_memory` tool、记忆注入 instructions、`AgentRuntime` session 管理 API（list/get/reset）与 `maxSessionMessages` 历史裁剪；`helm-persistence-jdbc` 新增 `JdbcMemoryStore` 与 `V2__memory.sql`；新增 `examples/memory-session-example` 端到端验证。详见第 3.1 节。 |
 | 2026-07-04 | 完成系统设计 Milestone 5：新增 `helm-persistence-jdbc`（`JdbcRuntimeStore` 注入 DataSource，JSON 列存负载，Flyway `V1__init.sql` 迁移，SQL 异常映射 `PersistenceException`）与 `helm-observability-logging`（`LoggingRuntimeObserver` 结构化 SLF4J 日志，仅记元数据不记 payload）；`helm-core` 新增 `RuntimeEventObserver` SPI。`RuntimeStoreContractTest` 在 InMemory 与 JDBC（H2）上均通过；文件模式 H2 重启恢复测试通过。`mvn verify` 全绿（170 测试）。系统设计 M1–M5 全部完成。 |
 | 2026-07-04 | 完成系统设计 Milestone 3：新增 `helm-http-core`、`helm-http-servlet`、`helm-cli`；框架无关 HTTP DTO/路由/错误映射，`HelmHttpServlet` 适配 Jakarta Servlet，Picocli `helm run`/`dev`/`operations`/`runs`/`run-detail`。`HttpErrorContractTest` 在 router 与 servlet（Jetty）上均通过；CLI 端到端测试通过；`mvn verify` 全绿（132 测试），`helm-http-core` 不依赖 Servlet。 |
