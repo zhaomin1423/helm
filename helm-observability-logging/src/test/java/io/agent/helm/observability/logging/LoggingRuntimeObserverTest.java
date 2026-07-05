@@ -7,6 +7,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.event.RuntimeEventType;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -34,7 +35,7 @@ final class LoggingRuntimeObserverTest {
 
     @Test
     void lifecycleEventLoggedAtInfo() {
-        observer.onEvent(event("operation.started", "op_1", null, 1));
+        observer.onEvent(event(RuntimeEventType.OPERATION_STARTED, "op_1", null, 1));
 
         assertThat(appender.list).anySatisfy(e -> {
             assertThat(e.getLevel()).isEqualTo(Level.INFO);
@@ -44,7 +45,7 @@ final class LoggingRuntimeObserverTest {
 
     @Test
     void toolEventLoggedAtDebug() {
-        observer.onEvent(event("tool.started", "op_1", null, 3));
+        observer.onEvent(event(RuntimeEventType.TOOL_STARTED, "op_1", null, 3));
 
         assertThat(appender.list).anySatisfy(e -> {
             assertThat(e.getLevel()).isEqualTo(Level.DEBUG);
@@ -54,7 +55,7 @@ final class LoggingRuntimeObserverTest {
 
     @Test
     void errorEventLoggedAtWarn() {
-        observer.onEvent(event("operation.failed", "op_1", null, 2));
+        observer.onEvent(event(RuntimeEventType.OPERATION_FAILED, "op_1", null, 2));
 
         assertThat(appender.list).anySatisfy(e -> {
             assertThat(e.getLevel()).isEqualTo(Level.WARN);
@@ -64,7 +65,8 @@ final class LoggingRuntimeObserverTest {
 
     @Test
     void payloadIsNeverLoggedSoSecretsDoNotLeak() {
-        observer.onEvent(event("operation.started", "op_1", null, 1, Map.of("apiKey", "super-secret-value")));
+        observer.onEvent(
+                event(RuntimeEventType.OPERATION_STARTED, "op_1", null, 1, Map.of("apiKey", "super-secret-value")));
 
         List<String> messages =
                 appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
@@ -72,12 +74,17 @@ final class LoggingRuntimeObserverTest {
         assertThat(messages).noneMatch(line -> line.contains("apiKey"));
     }
 
-    private static RuntimeEventRecord event(String type, String operationId, String workflowRunId, long sequence) {
+    private static RuntimeEventRecord event(
+            RuntimeEventType type, String operationId, String workflowRunId, long sequence) {
         return event(type, operationId, workflowRunId, sequence, Map.of());
     }
 
     private static RuntimeEventRecord event(
-            String type, String operationId, String workflowRunId, long sequence, Map<String, Object> payload) {
+            RuntimeEventType type,
+            String operationId,
+            String workflowRunId,
+            long sequence,
+            Map<String, Object> payload) {
         return new RuntimeEventRecord(
                 "evt_" + sequence, operationId, workflowRunId, sequence, type, payload, Instant.now());
     }

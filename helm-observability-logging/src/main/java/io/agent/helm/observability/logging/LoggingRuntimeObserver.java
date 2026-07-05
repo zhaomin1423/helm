@@ -2,6 +2,7 @@ package io.agent.helm.observability.logging;
 
 import io.agent.helm.core.event.RuntimeEventObserver;
 import io.agent.helm.core.event.RuntimeEventRecord;
+import io.agent.helm.core.event.RuntimeEventType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,24 +25,26 @@ public final class LoggingRuntimeObserver implements RuntimeEventObserver {
 
     @Override
     public void onEvent(RuntimeEventRecord event) {
-        String type = event.type();
-        if (type == null || type.isBlank()) {
+        RuntimeEventType type = event.type();
+        if (type == null) {
             return;
         }
-        if (type.startsWith("error.") || type.endsWith(".failed")) {
+        // The dotted string form ("operation.started", "tool.failed", ...) drives the log-level routing.
+        String typeString = type.type();
+        if (typeString.startsWith("error.") || typeString.endsWith(".failed")) {
             if (logger.isWarnEnabled()) {
                 logger.warn(
                         "helm event {} operation={} workflow={} sequence={}",
-                        type,
+                        typeString,
                         event.operationId(),
                         event.workflowRunId(),
                         event.sequence());
             }
-        } else if (type.contains("model.") || type.contains("tool.") || type.contains("skill.")) {
+        } else if (typeString.contains("model.") || typeString.contains("tool.") || typeString.contains("skill.")) {
             if (logger.isDebugEnabled()) {
                 logger.debug(
                         "helm event {} operation={} workflow={} sequence={}",
-                        type,
+                        typeString,
                         event.operationId(),
                         event.workflowRunId(),
                         event.sequence());
@@ -50,7 +53,7 @@ public final class LoggingRuntimeObserver implements RuntimeEventObserver {
             if (logger.isInfoEnabled()) {
                 logger.info(
                         "helm event {} operation={} workflow={} sequence={}",
-                        type,
+                        typeString,
                         event.operationId(),
                         event.workflowRunId(),
                         event.sequence());
