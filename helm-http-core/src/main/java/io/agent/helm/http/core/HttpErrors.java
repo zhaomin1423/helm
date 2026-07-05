@@ -46,13 +46,23 @@ public final class HttpErrors {
 
     public static int statusFor(String code) {
         return switch (code) {
-            case "AGENT_NOT_FOUND", "WORKFLOW_NOT_FOUND" -> 404;
-            case "VALIDATION_FAILED" -> 400;
+            case "AGENT_NOT_FOUND",
+                    "WORKFLOW_NOT_FOUND",
+                    "OPERATION_NOT_FOUND",
+                    "SESSION_NOT_FOUND",
+                    "TOOL_NOT_FOUND" -> 404;
+            case "VALIDATION_FAILED", "TOOL_INPUT_INVALID" -> 400;
+            case "UNAUTHORIZED" -> 401;
+            case "FORBIDDEN" -> 403;
             case "SESSION_BUSY" -> 409;
             case "CONTEXT_OVERFLOW" -> 413;
-            case "PROVIDER_RATE_LIMITED" -> 429;
-            case "PROVIDER_TIMEOUT" -> 504;
-            case "PROVIDER_NOT_FOUND", "PROVIDER_ERROR" -> 502;
+            case "PROVIDER_RATE_LIMITED", "RATE_LIMITED" -> 429;
+            case "PROVIDER_TIMEOUT", "ENGINE_TIMEOUT" -> 504;
+            case "PROVIDER_NOT_FOUND",
+                    "PROVIDER_ERROR",
+                    "MODEL_STREAM_FAILED",
+                    "ENGINE_INTERRUPTED",
+                    "MAX_TURNS_EXCEEDED" -> 502;
             default -> 500;
         };
     }

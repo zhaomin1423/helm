@@ -27,9 +27,20 @@ public final class HelmHttpRoutes {
     private HelmHttpRoutes() {}
 
     public static HelmHttpRouter router(AgentRuntime agentRuntime, WorkflowRuntime workflowRuntime) {
+        return router(agentRuntime, workflowRuntime, null, null);
+    }
+
+    /** Builds the standard router with per-route authorization; pass {@code null} authorizer to disable. */
+    public static HelmHttpRouter router(
+            AgentRuntime agentRuntime,
+            WorkflowRuntime workflowRuntime,
+            io.agent.helm.core.security.HelmAuthorizer authorizer,
+            SecurityContextExtractor extractor) {
         Objects.requireNonNull(agentRuntime, "agentRuntime");
         Objects.requireNonNull(workflowRuntime, "workflowRuntime");
         return HelmHttpRouter.builder()
+                .authorizer(authorizer)
+                .securityContextExtractor(extractor)
                 .route(
                         "POST",
                         "/agents/{agent}/instances/{instance}/sessions/{session}/prompt",
