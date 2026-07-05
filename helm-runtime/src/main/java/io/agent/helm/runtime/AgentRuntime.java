@@ -207,7 +207,12 @@ public final class AgentRuntime {
                         done.countDown();
                     }
                 });
-                done.await(DEFAULT_TIMEOUT.toMillis() * DEFAULT_MAX_TURNS + 1000, TimeUnit.MILLISECONDS);
+                try {
+                    done.await(DEFAULT_TIMEOUT.toMillis() * DEFAULT_MAX_TURNS + 1000, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted while streaming prompt", e);
+                }
                 Throwable throwable = failure.get();
                 if (throwable != null) {
                     throw throwable instanceof RuntimeException runtimeException
