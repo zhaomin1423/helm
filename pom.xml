@@ -30,6 +30,7 @@
     <module>examples/coding-workflow</module>
     <module>examples/memory-session-example</module>
     <module>examples/spring-boot-example</module>
+    <module>examples/external-consumer</module>
   </modules>
 
   <properties>
