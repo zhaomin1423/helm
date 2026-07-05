@@ -49,6 +49,8 @@
     <h2.version>2.3.232</h2.version>
     <slf4j.version>2.0.16</slf4j.version>
     <otel.version>1.40.0</otel.version>
+    <api.baseline.version/>
+    <japicmp.version>0.23.1</japicmp.version>
   </properties>
 
   <dependencyManagement>
@@ -217,4 +219,55 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <id>api-compat</id>
+      <activation>
+        <property>
+          <name>api.baseline.version</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>com.github.siom79.japicmp</groupId>
+            <artifactId>japicmp-maven-plugin</artifactId>
+            <version>${japicmp.version}</version>
+            <configuration>
+              <oldVersion>
+                <dependency>
+                  <groupId>${project.groupId}</groupId>
+                  <artifactId>${project.artifactId}</artifactId>
+                  <version>${api.baseline.version}</version>
+                </dependency>
+              </oldVersion>
+              <newVersion>
+                <file>
+                  <path>${project.build.directory}/${project.build.finalName}.jar</path>
+                </file>
+              </newVersion>
+              <parameter>
+                <breakBuildOnModifications>true</breakBuildOnModifications>
+                <breakBuildOnBinaryIncompatibleModifications>true</breakBuildOnBinaryIncompatibleModifications>
+                <ignoreMissingClasses>true</ignoreMissingClasses>
+                <excludes>
+                  <exclude>io.agent.helm.runtime.internal</exclude>
+                  <exclude>io.agent.helm.engine.internal</exclude>
+                </excludes>
+              </parameter>
+            </configuration>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>cmp</goal>
+                </goals>
+                <phase>verify</phase>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
