@@ -3,40 +3,87 @@ package io.agent.helm.core.type;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
-public record JsonSchema(String type, Map<String, JsonSchema> properties, List<String> required, JsonSchema items) {
+/**
+ * JSON Schema describing tool inputs. Built by reflection from {@link TypeDescriptor}; supports string, integer,
+ * number, boolean, enum, record (object), {@code List<X>} (array), {@code Map<String, X>} (object with
+ * additionalProperties), and {@code Optional<X>} (nullable). Record components may carry {@link SchemaDescription}.
+ */
+public record JsonSchema(
+        String type,
+        Map<String, JsonSchema> properties,
+        List<String> required,
+        JsonSchema items,
+        String description,
+        List<String> enumValues,
+        boolean nullable,
+        JsonSchema additionalProperties) {
+
     public JsonSchema {
         type = Objects.requireNonNull(type, "type");
         properties = Map.copyOf(Objects.requireNonNull(properties, "properties"));
         required = List.copyOf(Objects.requireNonNull(required, "required"));
+        enumValues = enumValues == null ? null : List.copyOf(enumValues);
     }
 
+    // —— Basic type factories (signatures unchanged for backward compatibility) ——
+
     public static JsonSchema string() {
-        return new JsonSchema("string", Map.of(), List.of(), null);
+        return new JsonSchema("string", Map.of(), List.of(), null, null, null, false, null);
     }
 
     public static JsonSchema integer() {
-        return new JsonSchema("integer", Map.of(), List.of(), null);
+        return new JsonSchema("integer", Map.of(), List.of(), null, null, null, false, null);
     }
 
     public static JsonSchema number() {
-        return new JsonSchema("number", Map.of(), List.of(), null);
+        return new JsonSchema("number", Map.of(), List.of(), null, null, null, false, null);
     }
 
     public static JsonSchema bool() {
-        return new JsonSchema("boolean", Map.of(), List.of(), null);
+        return new JsonSchema("boolean", Map.of(), List.of(), null, null, null, false, null);
     }
 
     public static JsonSchema object(Map<String, JsonSchema> properties, List<String> required) {
-        return new JsonSchema("object", Map.copyOf(properties), List.copyOf(required), null);
+        return new JsonSchema("object", properties, required, null, null, null, false, null);
     }
 
     public static JsonSchema array(JsonSchema items) {
-        return new JsonSchema("array", Map.of(), List.of(), items);
+        return new JsonSchema("array", Map.of(), List.of(), items, null, null, false, null);
+    }
+
+    // —— Extended factories ——
+
+    /** String schema restricted to the given enum values. */
+    public static JsonSchema enumeration(String... values) {
+        Objects.requireNonNull(values, "values");
+        if (values.length == 0) {
+            throw new IllegalArgumentException("enumValues must not be empty");
+        }
+        return new JsonSchema("string", Map.of(), List.of(), null, null, Arrays.asList(values), false, null);
+    }
+
+    /** Object schema allowing arbitrary string-keyed entries whose values conform to {@code valueSchema}. */
+    public static JsonSchema map(JsonSchema valueSchema) {
+        return new JsonSchema("object", Map.of(), List.of(), null, null, null, false, valueSchema);
+    }
+
+    // —— Wither methods ——
+
+    public JsonSchema withDescription(String description) {
+        return new JsonSchema(
+                type, properties, required, items, description, enumValues, nullable, additionalProperties);
+    }
+
+    public JsonSchema withNullable() {
+        return new JsonSchema(type, properties, required, items, description, enumValues, true, additionalProperties);
     }
 
     public static JsonSchema from(TypeDescriptor<?> descriptor) {
@@ -57,17 +104,54 @@ public record JsonSchema(String type, Map<String, JsonSchema> properties, List<S
             if (clazz == boolean.class || clazz == Boolean.class) {
                 return bool();
             }
+            if (clazz.isEnum()) {
+                String[] names = Arrays.stream(clazz.getEnumConstants())
+                        .map(Object::toString)
+                        .toArray(String[]::new);
+                return enumeration(names);
+            }
             if (clazz.isRecord()) {
-                Map<String, JsonSchema> properties = new LinkedHashMap<>();
-                for (RecordComponent component : clazz.getRecordComponents()) {
-                    properties.put(component.getName(), fromType(component.getGenericType()));
-                }
-                return object(properties, List.copyOf(properties.keySet()));
+                return fromRecord(clazz);
             }
         }
-        if (type instanceof ParameterizedType parameterizedType && parameterizedType.getRawType() == List.class) {
-            return array(fromType(parameterizedType.getActualTypeArguments()[0]));
+        if (type instanceof ParameterizedType parameterizedType) {
+            Type raw = parameterizedType.getRawType();
+            Type[] args = parameterizedType.getActualTypeArguments();
+            if (raw == List.class) {
+                return array(fromType(args[0]));
+            }
+            if (raw == Map.class) {
+                if (args[0] != String.class && !(args[0] instanceof Class<?> c && c == String.class)) {
+                    throw new IllegalArgumentException("Map key must be String: " + type.getTypeName());
+                }
+                return map(fromType(args[1]));
+            }
+            if (raw == Optional.class) {
+                return fromType(args[0]).withNullable();
+            }
         }
         throw new IllegalArgumentException("Unsupported schema type: " + type.getTypeName());
+    }
+
+    private static JsonSchema fromRecord(Class<?> clazz) {
+        Map<String, JsonSchema> properties = new LinkedHashMap<>();
+        List<String> required = new ArrayList<>();
+        for (RecordComponent component : clazz.getRecordComponents()) {
+            Type genericType = component.getGenericType();
+            JsonSchema propSchema = fromType(genericType);
+            SchemaDescription desc = component.getAnnotation(SchemaDescription.class);
+            if (desc != null) {
+                propSchema = propSchema.withDescription(desc.value());
+            }
+            properties.put(component.getName(), propSchema);
+            if (!isOptional(genericType)) {
+                required.add(component.getName());
+            }
+        }
+        return object(properties, required);
+    }
+
+    private static boolean isOptional(Type type) {
+        return type instanceof ParameterizedType pt && pt.getRawType() == Optional.class;
     }
 }

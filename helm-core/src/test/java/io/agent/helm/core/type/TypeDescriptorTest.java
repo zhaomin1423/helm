@@ -54,7 +54,7 @@ final class TypeDescriptorTest {
         properties.put("name", JsonSchema.string());
         required.add("name");
 
-        JsonSchema schema = new JsonSchema("object", properties, required, null);
+        JsonSchema schema = new JsonSchema("object", properties, required, null, null, null, false, null);
         properties.put("age", JsonSchema.integer());
         required.add("age");
 
