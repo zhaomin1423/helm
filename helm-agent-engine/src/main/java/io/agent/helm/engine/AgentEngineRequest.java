@@ -15,9 +15,25 @@ public record AgentEngineRequest(
         ModelProvider provider,
         ToolExecutor toolExecutor,
         Duration timeout,
-        int maxTurns) {
+        int maxTurns,
+        EngineEventListener listener) {
+
     public AgentEngineRequest {
         messages = List.copyOf(messages);
         tools = List.copyOf(tools);
+        listener = listener == null ? EngineEventListener.noop() : listener;
+    }
+
+    /** Backward-compatible constructor; listener defaults to no-op. */
+    public AgentEngineRequest(
+            ModelRef model,
+            String instructions,
+            List<ToolDescriptor> tools,
+            List<HelmMessage> messages,
+            ModelProvider provider,
+            ToolExecutor toolExecutor,
+            Duration timeout,
+            int maxTurns) {
+        this(model, instructions, tools, messages, provider, toolExecutor, timeout, maxTurns, null);
     }
 }

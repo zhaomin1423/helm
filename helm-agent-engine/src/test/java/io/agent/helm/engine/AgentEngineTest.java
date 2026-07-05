@@ -3,6 +3,8 @@ package io.agent.helm.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.agent.helm.core.error.MaxTurnsExceededException;
+import io.agent.helm.core.error.TurnTimeoutException;
 import io.agent.helm.core.message.HelmMessage;
 import io.agent.helm.core.message.Role;
 import io.agent.helm.core.message.ToolCallBlock;
@@ -94,8 +96,8 @@ final class AgentEngineTest {
                                         List.of(),
                                         List.of(HelmMessage.user("hang")),
                                         Duration.ofMillis(10))))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Model stream timed out");
+                .isInstanceOf(TurnTimeoutException.class)
+                .hasMessageContaining("Model stream timed out");
 
         assertThat(provider.subscription().cancelled()).isTrue();
     }
@@ -113,8 +115,8 @@ final class AgentEngineTest {
                                         List.of(),
                                         List.of(HelmMessage.user("hang")),
                                         Duration.ofMillis(10))))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Model stream timed out");
+                .isInstanceOf(TurnTimeoutException.class)
+                .hasMessageContaining("Model stream timed out");
 
         assertThat(provider.subscription().cancelled()).isTrue();
     }
@@ -135,8 +137,8 @@ final class AgentEngineTest {
                                 (operationId, name, input) -> "output",
                                 Duration.ofSeconds(5),
                                 1)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Agent loop exceeded max turns");
+                .isInstanceOf(MaxTurnsExceededException.class)
+                .hasMessageContaining("Agent loop exceeded max turns");
     }
 
     private static final class ScriptedProvider implements ModelProvider {
