@@ -2,7 +2,6 @@ package io.agent.helm.memory.semantic;
 
 import io.agent.helm.core.memory.MemoryStore;
 import io.agent.helm.core.memory.MemoryStoreContractTest;
-import io.agent.helm.runtime.memory.InMemoryMemoryStore;
 
 /**
  * Runs the shared {@link MemoryStoreContractTest} against {@link SemanticMemoryStore}, verifying the decorator

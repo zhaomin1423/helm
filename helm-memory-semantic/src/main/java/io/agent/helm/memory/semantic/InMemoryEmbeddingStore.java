@@ -11,18 +11,18 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * In-memory {@link EmbeddingStore} for development and tests. Stores vectors and records in {@link ConcurrentHashMap}s
- * and performs a linear scan with cosine similarity for {@link #search}.
+ * In-memory {@link IndexedEmbeddingStore} for development and tests. Stores vectors and records in
+ * {@link ConcurrentHashMap}s and performs a linear scan with cosine similarity for {@link #search}.
  *
  * <p>The {@link EmbeddingStore} SPI's {@code store} method only receives a vector (not the full {@link MemoryRecord}),
- * yet {@link EmbeddingStore#search} must return full records. This implementation therefore exposes an additional
- * {@link #index(MemoryRecord)} method: {@link SemanticMemoryStore} calls {@code index} after persisting the record so
- * that {@link #search} can return it. Entries with zero cosine similarity to the query are excluded, so searches only
- * return positively related memories.
+ * yet {@link EmbeddingStore#search} must return full records. The {@link IndexedEmbeddingStore} extension closes that
+ * gap: {@link SemanticMemoryStore} calls {@link #index(MemoryRecord)} after {@link #store} succeeds so that
+ * {@link #search} can return the full record. Entries with zero cosine similarity to the query are excluded, so
+ * searches only return positively related memories.
  *
  * @since 0.2.0
  */
-public final class InMemoryEmbeddingStore implements EmbeddingStore {
+public final class InMemoryEmbeddingStore implements IndexedEmbeddingStore {
 
     private record Entry(String scopeId, float[] vector) {}
 
@@ -30,9 +30,11 @@ public final class InMemoryEmbeddingStore implements EmbeddingStore {
     private final ConcurrentMap<String, MemoryRecord> records = new ConcurrentHashMap<>();
 
     /**
-     * Indexes a memory record so {@link #search} can return it. Replaces any prior record for the same id. This is a
-     * non-SPI extension; callers using only the {@link EmbeddingStore} interface do not need to invoke it directly.
+     * {@inheritDoc}
+     *
+     * <p>Replaces any prior record for the same id.
      */
+    @Override
     public void index(MemoryRecord memory) {
         Objects.requireNonNull(memory, "memory");
         records.put(memory.id(), memory);

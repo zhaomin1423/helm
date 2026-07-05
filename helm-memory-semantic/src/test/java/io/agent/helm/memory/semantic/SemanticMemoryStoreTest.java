@@ -3,10 +3,10 @@ package io.agent.helm.memory.semantic;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.agent.helm.core.error.PersistenceException;
 import io.agent.helm.core.memory.EmbeddingProvider;
 import io.agent.helm.core.memory.MemoryRecord;
 import io.agent.helm.core.memory.MemoryStore;
-import io.agent.helm.runtime.memory.InMemoryMemoryStore;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -189,6 +189,68 @@ class SemanticMemoryStoreTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void saveAndSearchWorkWithNonInMemoryIndexedEmbeddingStore() {
+        // Proves the SPI is no longer coupled to InMemoryEmbeddingStore: a second, unrelated
+        // IndexedEmbeddingStore implementation round-trips records through save -> search.
+        RecordingIndexedEmbeddingStore store = new RecordingIndexedEmbeddingStore();
+        SemanticMemoryStore memory =
+                new SemanticMemoryStore(new InMemoryMemoryStore(), new FakeEmbeddingProvider(), store, 5);
+
+        memory.save(new MemoryRecord("m1", "scope-a", "shipping", "express shipping", T1));
+
+        List<MemoryRecord> result = memory.search("scope-a", "fast delivery");
+        assertThat(result).isNotEmpty();
+        assertThat(result.get(0).id()).isEqualTo("m1");
+        // The decorator drove the extended SPI directly — no instanceof InMemoryEmbeddingStore involved.
+        assertThat(store.indexCalls).isEqualTo(1);
+        assertThat(store.storeCalls).isEqualTo(1);
+    }
+
+    @Test
+    void saveThrowsWhenEmbeddingDimensionMismatches() {
+        // A misconfigured provider whose dimension() disagrees with its emitted vector length must not silently
+        // produce wrong similarity scores.
+        EmbeddingProvider mismatched = new EmbeddingProvider() {
+            @Override
+            public float[] embed(String text) {
+                return new float[32]; // wrong length
+            }
+
+            @Override
+            public int dimension() {
+                return 64;
+            }
+        };
+        SemanticMemoryStore store =
+                new SemanticMemoryStore(new InMemoryMemoryStore(), mismatched, new InMemoryEmbeddingStore(), 5);
+
+        assertThatThrownBy(() -> store.save(new MemoryRecord("m1", "scope-a", "s", "content", T1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("dimension mismatch")
+                .hasMessageContaining("64")
+                .hasMessageContaining("32");
+    }
+
+    @Test
+    void saveThrowsWhenEmbeddingStoreThrowsAndRecordNotIndexed() {
+        // When store() throws, save must surface the error (not swallow it) and must NOT leave the record indexed.
+        ThrowingIndexedEmbeddingStore store = new ThrowingIndexedEmbeddingStore();
+        SemanticMemoryStore memory =
+                new SemanticMemoryStore(new InMemoryMemoryStore(), new FakeEmbeddingProvider(), store, 5);
+        MemoryRecord record = new MemoryRecord("m1", "scope-a", "shipping", "express shipping", T1);
+
+        assertThatThrownBy(() -> memory.save(record))
+                .isInstanceOf(PersistenceException.class)
+                .hasMessageContaining("m1")
+                .hasCauseInstanceOf(RuntimeException.class);
+        // Index is called only after store succeeds, so the failed store leaves nothing behind.
+        assertThat(store.indexCalled).isFalse();
+        // And the failed record produces no search hits via the embedding store.
+        assertThat(store.search("scope-a", new FakeEmbeddingProvider().embed("express shipping"), 5))
+                .isEmpty();
+    }
+
     /** Embedding provider that always fails, to exercise the keyword-fallback path. */
     private static final class ThrowingEmbeddingProvider implements EmbeddingProvider {
         @Override
@@ -199,6 +261,69 @@ class SemanticMemoryStoreTest {
         @Override
         public int dimension() {
             return FakeEmbeddingProvider.DIMENSION;
+        }
+    }
+
+    /**
+     * Second, unrelated {@link IndexedEmbeddingStore} implementation used to prove {@link SemanticMemoryStore} is not
+     * coupled to {@link InMemoryEmbeddingStore}. Delegates to an {@link InMemoryEmbeddingStore} for storage while
+     * counting SPI calls.
+     */
+    private static final class RecordingIndexedEmbeddingStore implements IndexedEmbeddingStore {
+        private final InMemoryEmbeddingStore delegate = new InMemoryEmbeddingStore();
+        int indexCalls;
+        int storeCalls;
+
+        @Override
+        public void store(String memoryId, String scopeId, float[] vector) {
+            storeCalls++;
+            delegate.store(memoryId, scopeId, vector);
+        }
+
+        @Override
+        public List<MemoryRecord> search(String scopeId, float[] queryVector, int topK) {
+            return delegate.search(scopeId, queryVector, topK);
+        }
+
+        @Override
+        public void delete(String memoryId) {
+            delegate.delete(memoryId);
+        }
+
+        @Override
+        public void index(MemoryRecord memory) {
+            indexCalls++;
+            delegate.index(memory);
+        }
+    }
+
+    /**
+     * {@link IndexedEmbeddingStore} whose {@link #store} always throws, used to assert {@link SemanticMemoryStore#save}
+     * surfaces the failure and leaves nothing indexed.
+     */
+    private static final class ThrowingIndexedEmbeddingStore implements IndexedEmbeddingStore {
+        private final InMemoryEmbeddingStore delegate = new InMemoryEmbeddingStore();
+        boolean indexCalled;
+
+        @Override
+        public void store(String memoryId, String scopeId, float[] vector) {
+            throw new RuntimeException("embedding store unavailable");
+        }
+
+        @Override
+        public List<MemoryRecord> search(String scopeId, float[] queryVector, int topK) {
+            return delegate.search(scopeId, queryVector, topK);
+        }
+
+        @Override
+        public void delete(String memoryId) {
+            delegate.delete(memoryId);
+        }
+
+        @Override
+        public void index(MemoryRecord memory) {
+            indexCalled = true;
+            delegate.index(memory);
         }
     }
 }
