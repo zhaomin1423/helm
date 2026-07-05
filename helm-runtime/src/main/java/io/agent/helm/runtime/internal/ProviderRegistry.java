@@ -1,4 +1,4 @@
-package io.agent.helm.runtime;
+package io.agent.helm.runtime.internal;
 
 import io.agent.helm.core.error.ProviderNotFoundException;
 import io.agent.helm.core.model.ModelProvider;
@@ -6,14 +6,14 @@ import io.agent.helm.core.model.ModelRef;
 import java.util.List;
 import java.util.Map;
 
-final class ProviderRegistry {
+public final class ProviderRegistry {
     private final List<ModelProvider> providers;
 
-    ProviderRegistry(List<ModelProvider> providers) {
+    public ProviderRegistry(List<ModelProvider> providers) {
         this.providers = List.copyOf(providers);
     }
 
-    ModelProvider resolve(ModelRef model) {
+    public ModelProvider resolve(ModelRef model) {
         return providers.stream()
                 .filter(provider -> provider.supports(model))
                 .findFirst()

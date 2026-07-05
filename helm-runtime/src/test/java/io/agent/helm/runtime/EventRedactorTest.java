@@ -2,6 +2,7 @@ package io.agent.helm.runtime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.agent.helm.runtime.internal.EventRedactor;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;

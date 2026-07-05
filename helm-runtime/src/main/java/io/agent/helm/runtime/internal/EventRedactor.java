@@ -1,4 +1,4 @@
-package io.agent.helm.runtime;
+package io.agent.helm.runtime.internal;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -6,10 +6,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-final class EventRedactor {
+public final class EventRedactor {
     private EventRedactor() {}
 
-    static Map<String, Object> redact(Map<String, Object> payload) {
+    public static Map<String, Object> redact(Map<String, Object> payload) {
         Map<String, Object> redacted = new LinkedHashMap<>();
         payload.forEach((key, value) -> redactEntry(redacted, String.valueOf(key), value));
         return Map.copyOf(redacted);

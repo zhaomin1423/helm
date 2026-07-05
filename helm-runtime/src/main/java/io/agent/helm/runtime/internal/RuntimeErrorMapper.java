@@ -1,17 +1,17 @@
-package io.agent.helm.runtime;
+package io.agent.helm.runtime.internal;
 
 import io.agent.helm.core.error.HelmException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-final class RuntimeErrorMapper {
+public final class RuntimeErrorMapper {
     private RuntimeErrorMapper() {}
 
-    static Map<String, Object> operationError(Throwable throwable) {
+    public static Map<String, Object> operationError(Throwable throwable) {
         return runtimeError(throwable, "RUNTIME_ERROR");
     }
 
-    static Map<String, Object> workflowError(Throwable throwable) {
+    public static Map<String, Object> workflowError(Throwable throwable) {
         return runtimeError(throwable, "WORKFLOW_FAILED");
     }
 
