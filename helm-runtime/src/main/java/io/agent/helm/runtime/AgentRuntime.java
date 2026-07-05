@@ -51,9 +51,12 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class AgentRuntime {
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
@@ -109,8 +112,10 @@ public final class AgentRuntime {
     }
 
     /**
-     * Streams prompt events to the subscriber. @Preview the current implementation runs the operation to completion
-     * before emitting a single content delta and a completion event; true incremental token streaming is planned.
+     * Streams prompt events to the subscriber as they arrive (one {@link PromptStreamEvent.ContentDelta} per model
+     * token). The operation is admitted, the engine stream is forwarded, and the terminal record is persisted before
+     * {@link PromptStreamEvent.OperationCompleted} is emitted. @Preview streamed session persistence currently excludes
+     * tool-call messages; planned.
      */
     @io.agent.helm.core.annotation.Preview
     public Flow.Publisher<PromptStreamEvent> promptStream(AgentPromptRequest request) {
@@ -118,15 +123,146 @@ public final class AgentRuntime {
             SubmissionPublisher<PromptStreamEvent> pub = new SubmissionPublisher<>();
             pub.subscribe(subscriber);
             String operationId = "op_" + UUID.randomUUID();
+            String sessionId = sessionId(request.agentName(), request.instanceId(), request.sessionName());
+            AtomicInteger eventSequence = new AtomicInteger(0);
             try {
-                PromptExecution exec = executePrompt(request, operationId, defaultSecurityContext);
-                pub.submit(new PromptStreamEvent.ContentDelta(exec.text()));
-                pub.submit(new PromptStreamEvent.OperationCompleted(operationId, exec.text(), new TokenUsage(0, 0)));
+                authorize(defaultSecurityContext, HelmAction.PROMPT, HelmResource.of("AGENT", request.agentName()));
+                acquireRate(RateLimitKey.principal(defaultSecurityContext.principal()));
+                if (activeSessions.putIfAbsent(sessionId, Boolean.TRUE) != null) {
+                    throw new SessionBusyException("Session is busy", Map.of("sessionId", sessionId), Map.of());
+                }
+                Instant now = Instant.now();
+                store.saveOperation(new OperationRecord(
+                        operationId,
+                        sessionId,
+                        "PROMPT",
+                        OperationStatus.RUNNING,
+                        request.text(),
+                        null,
+                        Map.of(),
+                        now,
+                        null));
+                appendEvent(
+                        operationId,
+                        null,
+                        eventSequence.incrementAndGet(),
+                        RuntimeEventType.OPERATION_STARTED,
+                        Map.of("text", String.valueOf(request.text())));
+                AgentDefinition agentDef = agent(request.agentName());
+                AgentConfig config = agentDef.configure(new AgentContext(request.agentName(), request.instanceId()));
+                ModelProvider provider = providers.resolve(config.model());
+                AgentSessionState current = store.loadSession(sessionId)
+                        .orElseGet(() -> new AgentSessionState(
+                                sessionId,
+                                request.agentName(),
+                                request.instanceId(),
+                                request.sessionName(),
+                                0,
+                                List.of(),
+                                now,
+                                now));
+                List<HelmMessage> messages = new ArrayList<>(current.messages());
+                messages.add(HelmMessage.user(request.text()));
+                messages = trimHistory(messages);
+                String scopeId = memoryScopeId(request.agentName(), request.instanceId());
+                List<Tool<?, ?>> tools = effectiveTools(config, scopeId);
+                String instructions = instructionsWithMemories(config.instructions(), scopeId);
+                List<ToolDescriptor> toolDescriptors =
+                        tools.stream().map(ToolDescriptor::from).toList();
+                AgentEngineRequest engineRequest = new AgentEngineRequest(
+                        config.model(),
+                        instructions,
+                        toolDescriptors,
+                        messages,
+                        provider,
+                        toolExecutor(tools, operationId),
+                        DEFAULT_TIMEOUT,
+                        DEFAULT_MAX_TURNS,
+                        buildEngineListener(operationId, eventSequence));
+                StringBuilder text = new StringBuilder();
+                CountDownLatch done = new CountDownLatch(1);
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                engine.runStream(engineRequest).subscribe(new Flow.Subscriber<>() {
+                    @Override
+                    public void onSubscribe(Flow.Subscription subscription) {
+                        subscription.request(Long.MAX_VALUE);
+                    }
+
+                    @Override
+                    public void onNext(PromptStreamEvent event) {
+                        if (event instanceof PromptStreamEvent.ContentDelta delta) {
+                            text.append(delta.text());
+                        }
+                        pub.submit(event);
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        failure.set(throwable);
+                        done.countDown();
+                    }
+
+                    @Override
+                    public void onComplete() {
+                        done.countDown();
+                    }
+                });
+                done.await(DEFAULT_TIMEOUT.toMillis() * DEFAULT_MAX_TURNS + 1000, TimeUnit.MILLISECONDS);
+                Throwable throwable = failure.get();
+                if (throwable != null) {
+                    throw throwable instanceof RuntimeException runtimeException
+                            ? runtimeException
+                            : new RuntimeException(throwable);
+                }
+                List<HelmMessage> updated = new ArrayList<>(messages);
+                updated.add(HelmMessage.assistant(text.toString()));
+                store.saveSession(new AgentSessionState(
+                        sessionId,
+                        request.agentName(),
+                        request.instanceId(),
+                        request.sessionName(),
+                        current.version() + 1,
+                        updated,
+                        current.createdAt(),
+                        Instant.now()));
+                store.saveOperation(new OperationRecord(
+                        operationId,
+                        sessionId,
+                        "PROMPT",
+                        OperationStatus.SUCCEEDED,
+                        request.text(),
+                        text.toString(),
+                        Map.of(),
+                        now,
+                        Instant.now()));
+                appendEventSafely(
+                        operationId,
+                        null,
+                        eventSequence.incrementAndGet(),
+                        RuntimeEventType.OPERATION_SUCCEEDED,
+                        Map.of("text", text.toString()));
+                pub.submit(
+                        new PromptStreamEvent.OperationCompleted(operationId, text.toString(), new TokenUsage(0, 0)));
                 pub.close();
             } catch (RuntimeException e) {
                 String code = (e instanceof io.agent.helm.core.error.HelmException he) ? he.code() : "INTERNAL_ERROR";
+                Map<String, Object> error = RuntimeErrorMapper.operationError(e);
+                store.saveOperation(new OperationRecord(
+                        operationId,
+                        sessionId,
+                        "PROMPT",
+                        OperationStatus.FAILED,
+                        request.text(),
+                        null,
+                        error,
+                        Instant.now(),
+                        Instant.now()));
+                appendEventSafely(
+                        operationId, null, eventSequence.incrementAndGet(), RuntimeEventType.OPERATION_FAILED, error);
                 pub.submit(new PromptStreamEvent.OperationFailed(operationId, code, String.valueOf(e.getMessage())));
                 pub.closeExceptionally(e);
+            } finally {
+                activeSessions.remove(sessionId);
             }
         };
     }
