@@ -4,7 +4,7 @@
 
 Helm 用 Java 构建可编程的 AI Agent 运行时。它不是一个简单的 LLM SDK 包装器，而是为模型提供完整 harness：session、tool、skill、sandbox、workflow、事件流、持久化和可替换的模型 provider。
 
-项目当前处于 **MVP 设计阶段**。完整设计见 [`docs/helm-mvp-design.md`](docs/helm-mvp-design.md)。
+项目已完成 MVP 设计（Milestone 1–5）与 11 篇生产化组件设计的落地实现，当前版本为 `0.1.0-SNAPSHOT`，尚未正式发布。完整设计见 [`docs/helm-mvp-design.md`](docs/helm-mvp-design.md)，实现现状见下方[路线图](#路线图)与[模块说明](docs/modules.md)。
 
 ## 为什么是 Helm？
 
@@ -21,25 +21,30 @@ Helm 的目标是把这些能力做成 Java 开发者熟悉的框架：
 - **Session 管理**：持久化会话历史，支持恢复、列出、检查和重置 session，并可限制历史长度。
 - **Provider SPI**：用统一接口接入 OpenAI、Anthropic、本地模型或企业网关。
 
-## 特性规划
+## 特性一览
 
-| 能力 | MVP 规划 |
-| --- | --- |
-| Core-first runtime | 核心运行时不绑定 Spring、Servlet、Netty 或其他 Web 框架。 |
-| Agent engine | 内置 `helm-agent-engine`，负责 agent loop、turn、stream、tool-call 编排和 compaction。 |
-| Typed tools | 使用 Java 类型定义 tool 输入输出，并生成模型可理解的 schema。 |
-| Persistent sessions | 保存 Agent session、operation、消息历史和事件。 |
-| Session management | 列出、检查、重置 session；`maxSessionMessages` 限制上下文长度。 |
-| Long-term memory | `MemoryStore` SPI + 内置 `save_memory` tool，记忆按 agent 实例 scope 存储并自动注入 instructions。 |
-| Finite workflows | 支持有限任务运行、状态查询、结果返回和事件检查。 |
-| Replaceable providers | 通过 `ModelProvider` SPI 接入不同模型供应商。 |
-| Sandbox SPI | 支持内存 sandbox 和本地开发 sandbox，后续可扩展到容器或远程 sandbox。 |
-| Spring Boot starter | 提供自动配置、bean discovery 和 HTTP route 挂载。 |
-| CLI | 提供 `helm dev`、`helm run`、`helm inspect` 等本地开发命令。 |
+| 能力 | 说明 | 状态 |
+| --- | --- | --- |
+| Core-first runtime | 核心运行时不绑定 Spring、Servlet、Netty 或其他 Web 框架。 | ✓ |
+| Agent engine | 内置 `helm-agent-engine`，负责 agent loop、turn、stream、tool-call 编排、compaction、engine 事件与 usage 聚合。 | ✓ |
+| Typed tools | 使用 Java 类型定义 tool 输入输出，支持 Map/enum/Optional 等扩展 schema，并生成模型可理解的 schema。 | ✓ |
+| Persistent sessions | 保存 Agent session、operation、消息历史和事件；支持内存与 JDBC 两种实现。 | ✓ |
+| Session management | 列出、检查、重置 session；`maxSessionMessages` 限制上下文长度。 | ✓ |
+| Long-term memory | `MemoryStore` SPI + 内置 `save_memory` tool，记忆按 agent 实例 scope 存储并自动注入 instructions；`helm-memory-semantic` 提供向量化语义检索。 | ✓ |
+| Finite workflows | 支持有限任务运行、状态查询、结果返回和事件检查。 | ✓ |
+| Replaceable providers | 通过 `ModelProvider` SPI 接入 OpenAI、Anthropic 等模型供应商。 | ✓ |
+| Sandbox SPI | 支持内存 sandbox 和本地开发 sandbox；容器/远程 sandbox 为 post-GA 规划。 | ✓（local）/ ◯（remote） |
+| Authorizer / rate limiting | `HelmAuthorizer`/`HelmSecurityContext` 授权扩展点，`RateLimiter` 接入 admission 流程。 | ✓ |
+| Streaming API | `promptStream`（`@Preview`）暴露增量 token，HTTP 层提供 SSE route。 | ✓（Preview） |
+| Observability | `RuntimeEventObserver` SPI，`helm-observability-logging`（结构化日志）与 `helm-observability-opentelemetry`（metrics + tracing）。 | ✓ |
+| HTTP client SDK | `helm-client` 提供 sync/async/streaming 调用与错误映射。 | ✓ |
+| Spring Boot starter | 提供自动配置、bean discovery 和 HTTP route 挂载。 | ✓ |
+| CLI | 提供 `helm dev`、`helm run`、`helm operations`、`helm runs` 等本地开发命令。 | ✓ |
+| Durable scale runtime | async workers、per-session 队列、lease/recovery、turn journal。 | ◯（SPI 占位，post-GA） |
 
 ## 快速示例
 
-> 以下 API 是 MVP 设计目标，实际实现可能随开发推进调整。
+> 以下代码片段是简化示例；可运行的完整用法见 [`docs/modules.md`](docs/modules.md) 与 `examples/` 目录。
 
 定义一个 Agent：
 
@@ -77,7 +82,7 @@ public final class ReviewWorkflow implements WorkflowDefinition<ReviewInput, Rev
 }
 ```
 
-计划中的本地运行方式：
+本地运行方式（`helm-cli`）：
 
 ```bash
 helm run review --input '{"content":"..."}'
@@ -86,40 +91,43 @@ helm dev
 
 ## 架构概览
 
-模块实现状态：`✓` 已实现，`◯` 待实现（详见 [`docs/design/README.md`](docs/design/README.md)）。
+模块实现状态：`✓` 已实现，`◯` 待实现（post-GA，详见 [`docs/design/README.md`](docs/design/README.md)）。
 
 ```text
 Application code
-  -> Client SDK ◯ / HTTP Servlet ✓ / CLI ✓
-    -> [HelmAuthorizer ◯] [RateLimiter ◯]
+  -> Client SDK ✓ / HTTP Servlet ✓ / CLI ✓
+    -> [HelmAuthorizer ✓] [RateLimiter ✓]
       -> AgentRuntime ✓ / WorkflowRuntime ✓
         -> registries (agent/workflow/tool/skill/provider) ✓
-        -> AgentEngine ✓（基础）/ hardening ◯
+        -> AgentEngine ✓（含 hardening：engine events / tool 校验 / usage 聚合 / overflow 分类）
           -> TurnRunner -> ModelProvider.stream ✓
           -> ToolCallOrchestrator / ToolExecutor ✓
-        -> RuntimeStore ✓ / MemoryStore ✓ / EventBus ✓
-        -> admission / rate limiting ◯ -> durable queue ◯
+        -> RuntimeStore ✓ / MemoryStore ✓（含语义检索 `helm-memory-semantic`） / EventBus ✓
+        -> admission（authorizer + rate limiter）✓ -> durable queue SPI 占位 ◯（post-GA）
 ```
 
 模块结构（`✓` 已实现，`◯` 待实现，对应 [`docs/design/`](docs/design/) 各组件方案）：
 
 ```text
 helm/
-  helm-core/                       ✓  契约层（+ authorizer SPI ◯、json schema 扩展 ◯）
-  helm-agent-engine/               ✓  执行引擎（+ hardening ◯、streaming 暴露 ◯）
-  helm-runtime/                    ✓  运行时（+ admission/rate limit ◯、durable ◯）
+  helm-core/                       ✓  契约层（authorizer SPI、json schema 扩展、MemoryStore 均已实现）
+  helm-agent-engine/               ✓  执行引擎（engine hardening、streaming 暴露 @Preview 已实现）
+  helm-runtime/                    ✓  运行时（admission/rate limit 已实现；durable scale SPI 占位 ◯）
+  helm-runtime-testkit/            ✓  合约测试基类与 fixture
   helm-provider-openai/            ✓
   helm-provider-anthropic/         ✓
   helm-sandbox-local/              ✓
-  helm-sandbox-remote/             ◯
+  helm-sandbox-remote/             ◯  post-GA
   helm-http-core/                  ✓
   helm-http-servlet/               ✓
-  helm-client/                     ✓
+  helm-client/                     ✓  HTTP client SDK（sync/async/streaming）
   helm-cli/                        ✓
   helm-spring-boot-starter/        ✓
   helm-persistence-jdbc/           ✓
   helm-observability-logging/      ✓
-  helm-observability-opentelemetry/ ◯
+  helm-observability-opentelemetry/ ✓  metrics + tracing、@Redact
+  helm-memory-semantic/            ✓  向量化记忆检索（SemanticMemoryStore）
+  helm-bom/                        ✓  版本管理 BOM
   examples/
   docs/design/                     组件级设计方案（11 篇）
 ```
@@ -156,24 +164,31 @@ Helm 使用第一方 `helm-agent-engine` 承担模型运行时的核心职责，
 | 系统设计 M4 | ✅ 完成 | Spring Boot starter、自动配置、bean discovery、示例项目 |
 | 系统设计 M5 | ✅ 完成 | JDBC store、schema migrations、event persistence、logging observer |
 | 缺口补齐 | ✅ 完成 | Memory 管理、Session 管理生命周期、历史裁剪（2026-07-05） |
-| 生产化 M0–M11 | 🟡 设计中 | 流式 API、engine hardening、JsonSchema 扩展、memory 语义检索、authorizer、client SDK、rate limiting、metrics/OTel、durable scale、release engineering、API governance —— 11 篇组件方案见 [`docs/design/`](docs/design/README.md) |
+| 生产化组件（11 篇设计） | ✅ 完成（2026-07-05） | API governance、engine hardening、JsonSchema 扩展、streaming API（`@Preview`）、authorizer/security context、rate limiting、memory 语义检索（`helm-memory-semantic`）、HTTP client SDK（`helm-client`）、metrics/OTel（`helm-observability-opentelemetry`）、release engineering（LICENSE/CHANGELOG/CI）、durable scale SPI 占位——详见 [`docs/design/`](docs/design/README.md) |
+| Post-GA | 🟡 进行中 | durable scale 完整实现（async workers、lease/recovery、turn journal）、remote/container sandbox |
 
 长期计划与进度跟踪见 [`docs/roadmap.md`](docs/roadmap.md)。
 
 ## 文档
 
 - [Helm MVP 设计文档](docs/helm-mvp-design.md)
-- [组件设计方案](docs/design/README.md)：11 个待实现生产能力的逐组件设计
+- [模块说明](docs/modules.md)：每个模块的用途、依赖与快速使用示例
+- [组件设计方案](docs/design/README.md)：11 篇生产化组件设计（已全部落地实现）
 - [生产路线图](docs/roadmap.md)
+- [Changelog](CHANGELOG.md)
+- [贡献指南](CONTRIBUTING.md)
 
 ## 示例
 
 - [Coding Workflow](examples/coding-workflow/)：从 GitHub issue 读取需求，设计方案，审查设计，开发代码，执行验证，代码审查并创建 pull request 的软件开发自动化 workflow。
+- [Memory & Session 示例](examples/memory-session-example/)：客服助手场景端到端验证长期记忆、session 恢复与管理、tool 调用。
+- [Spring Boot 示例](examples/spring-boot-example/)：`helm-spring-boot-starter` 自动配置与 HTTP route 挂载。
+- [外部消费者示例](examples/external-consumer/)：以 Maven 坐标依赖方式引入 Helm 模块的最小示例。
 
 ## 状态
 
-Helm 目前还不是可用发布版本。当前仓库用于沉淀架构设计、API 形态和实现计划。
+Helm 已完成系统设计 Milestone 1–5 与 11 篇生产化组件设计的落地实现（`mvn verify` 全绿，20 个模块）。项目仍处于 `0.1.0-SNAPSHOT`，尚未发布正式版本；API 在 1.0 之前可能随 minor 版本调整（见 [`docs/design/11-api-governance.md`](docs/design/11-api-governance.md)）。剩余工作集中在 post-GA 的 durable scale 运行时与 remote sandbox。
 
 ## License
 
-License 尚未确定。
+Apache License 2.0，见 [`LICENSE`](LICENSE)。
