@@ -4,6 +4,10 @@ Helm 在系统设计 Milestone 1–5 之后已具备完整 MVP 基座，HTTP/Ser
 
 ---
 
+## 实现状态（2026-07-05）
+
+**✓ 已实现**。`HelmSecurityContext`/`HelmAuthorizer`/`HelmAction`（含 `TOOL_EXECUTE`/`MEMORY_WRITE`/`SANDBOX_COMMAND`）/`HelmResource`，`AgentRuntime` admission `authorize()`，HTTP `SecurityContextExtractor`（header extractor 现为 dev opt-in，不再默认自动装配）。
+
 ## 1. 背景与目标
 
 ### 1.1 为什么需要 Authorizer / SecurityContext
@@ -40,6 +44,8 @@ Helm 在系统设计 Milestone 1–5 之后已具备完整 MVP 基座，HTTP/Ser
 ---
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 roadmap 出处
 

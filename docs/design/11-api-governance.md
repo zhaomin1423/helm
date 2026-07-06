@@ -4,6 +4,10 @@ Helm 在系统设计 Milestone 1–5 之后已具备完整 MVP 基座（core/eng
 
 ---
 
+## 实现状态（2026-07-05）
+
+**✓ 已实现**。`ErrorCode` 注册表 + `stable()` 合约测试、`@Preview`/`@Experimental` 注解、`RuntimeStore` 拆分为 `SessionStore`/`OperationStore`/`WorkflowRunStore`/`EventStore` 子接口、`io.agent.helm` groupId、`helm-bom`、`docs/contracts/error-codes.md`。`japicmp` profile 已配置（`api-compat`）。
+
 ## 1. 背景与目标
 
 ### 1.1 为什么需要 API governance
@@ -36,6 +40,8 @@ Helm 已进入"多 adapter 并行开发"阶段：OpenAI/Anthropic provider、JDB
 ---
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 roadmap M0 未完成项
 

@@ -4,6 +4,10 @@
 >
 > 关联组件：#2 engine hardening（engine 事件 / tool 校验 / usage 聚合）、#8 metrics & OpenTelemetry。
 
+## 实现状态（2026-07-05）
+
+**✓ 已实现（基础）**。`promptStream`（`@Preview`）+ `PromptStreamEvent` + SSE route + `helm-client` 增量流式 + 订阅取消已落地。仍待实现：durable 流式 chunk recovery（见 #9）。
+
 ## 1. 背景与目标
 
 `ModelProvider.stream(ModelRequest)` 已经返回 `Flow.Publisher<ModelStreamEvent>`（`helm-core/src/main/java/io/agent/helm/core/model/ModelProvider.java:9`），流式能力在 SPI 层具备。但 runtime 与 engine 层把它折叠成同步结果：`AgentSessionApi.prompt(String)` 只返回 `PromptResult(operationId, text)`，调用方只能等整轮结束后拿到最终文本，无法增量收到 token、tool call、tool result 与 turn 边界。
@@ -22,6 +26,8 @@
 - 远程 provider 的真实网络流式实现（属 provider adapter），本组件只约束 SPI 契约。
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 SPI 层已具备流式能力，但事件粒度不够
 

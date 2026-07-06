@@ -6,6 +6,10 @@ Helm 在系统设计 Milestone 1–5 之后已具备完整 MVP 基座（core/eng
 
 ---
 
+## 实现状态（2026-07-05）
+
+**✓ 已实现（基础）**。`RateLimiter`/`RateLimitKey` + `AgentRuntime.acquireRate` admission。仍待实现：多维配额、分布式限流。
+
 ## 1. 背景与目标
 
 ### 1.1 为什么需要 rate limiting
@@ -52,6 +56,8 @@ Helm 当前的 admission 管道只有两层防护：
 ---
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 roadmap 出处
 

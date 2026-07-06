@@ -4,13 +4,28 @@ This file gives coding agents the project-specific context needed to work in thi
 
 ## Project overview
 
-Helm is a Java 21 Agent Harness Framework. The current codebase contains the Milestone 1 foundation:
+Helm is a Java 21 Agent Harness Framework. The codebase is pre-1.0: all planned modules except `helm-sandbox-remote` are implemented and pass tests, but APIs may still evolve before 1.0. The codebase is organized as 21 Maven modules (17 `helm-*` modules plus 4 `examples/`), under the package namespace `io.agent.helm`.
 
-- `helm-core`: public API and SPI contracts, structured errors, messages, model provider SPI, tool, workflow, sandbox, store, and event types.
-- `helm-agent-engine`: prepared model/tool turn execution and agent loop behavior.
-- `helm-runtime`: registries, fake provider, in-memory runtime store, agent prompt runtime, workflow runtime, event redaction, and tests.
+Module groups:
 
-The package namespace for production Java code is `io.agent.helm`.
+- Core / engine / runtime: `helm-core` (API + SPI contracts, structured errors, messages, model provider/tool/workflow/sandbox/store/event types), `helm-agent-engine` (agent loop, turn runner, tool-call orchestration, streaming, context management), `helm-runtime` (registries, fake provider, in-memory runtime store, agent/workflow runtime, event redaction, admission + rate limiting, durable queue).
+- Providers: `helm-provider-openai`, `helm-provider-anthropic`.
+- Sandbox: `helm-sandbox-local` (no `helm-sandbox-remote` yet).
+- HTTP / CLI / Spring / client SDK: `helm-http-core`, `helm-http-servlet`, `helm-cli`, `helm-spring-boot-starter`, `helm-client`.
+- Persistence: `helm-persistence-jdbc` (JDBC store, schema migrations, event persistence, optimistic concurrency control).
+- Observability: `helm-observability-logging`, `helm-observability-opentelemetry` (metrics + tracing `RuntimeEventObserver`).
+- Memory: `helm-memory-semantic` (`SemanticMemoryStore` decorator, in-memory `EmbeddingStore`, `FakeEmbeddingProvider`).
+- Test kit and BOM: `helm-runtime-testkit` (test fixtures for `AgentRuntime` + `FakeProvider` + `InMemoryRuntimeStore`), `helm-bom`.
+- Examples: `coding-workflow`, `memory-session-example`, `spring-boot-example`, `external-consumer`.
+
+Key current capabilities (mostly `@Preview` / pre-1.0):
+
+- Durable dispatch: in-memory `WorkQueue` with lease claiming and `LeaseManager` recovery for expired leases. Turn journal is SPI-only; stream-chunk recovery, durable cancellation, provider routing, and remote sandbox are not yet implemented.
+- Streaming: `promptStream` exposes streaming responses and persists streamed sessions with tool-call messages.
+- Admission control: `HelmAuthorizer` + `SecurityContext`, `RateLimiter` SPI (basic) on the admission path.
+- Memory / session management: `MemoryStore` SPI with `save_memory` tool, agent-scoped long-term memory, session lifecycle (list/inspect/reset), `maxSessionMessages` history trimming.
+- Observability: structured event bus, logging observer, OTel observer with metrics + tracing.
+- JDBC persistence with optimistic concurrency control and idempotent event writes.
 
 ## Build and verification
 
@@ -23,7 +38,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 `mvn verify` runs:
 
 - compilation for all modules,
-- unit tests,
+- unit tests (~809 tests across 21 modules),
 - Spotless format checks.
 
 For formatting only:
@@ -40,7 +55,8 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 - Put runtime orchestration and persistence behavior in `helm-runtime`.
 - Put model/tool turn execution logic in `helm-agent-engine`.
 - Prefer small interfaces and immutable records/value objects.
-- Wrap framework failures in structured `HelmException` subclasses where appropriate.
+- Wrap framework failures in structured `HelmException` subclasses where appropriate. `HelmException` supports cause-chaining via a wrapped `Throwable`.
+- Tools receive an expanded `ToolContext` carrying `securityContext`, `sandbox`, `clock`, and `logger` — do not reach for static/global instances.
 - Do not introduce real provider credentials or network-dependent tests.
 - Use deterministic tests with `FakeProvider` or local in-memory fakes.
 
@@ -67,4 +83,4 @@ If verification cannot run because JDK 21 is unavailable, report that explicitly
 
 ## Git workflow
 
-The repository currently keeps the initial foundation in a single commit. If asked to preserve this shape, amend changes into the existing commit instead of creating additional commits.
+Follow conventional commit messages (`feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`). Commit only when asked; the repository has many commits rather than a single foundation commit.

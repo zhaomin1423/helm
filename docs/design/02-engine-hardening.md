@@ -2,6 +2,10 @@
 
 > 组件编号：#2 · 来源 milestone：M3 · 状态：proposed · 关联组件：#1 streaming、#3 json schema、#8 metrics/otel、#11 api governance
 
+## 实现状态（2026-07-05）
+
+**✓ 已实现**。`EngineEvent`/`EngineEventListener`（含 `ModelFailed`/`ToolFailed`/`TurnFailed`）、tool input/output 校验（`validateToolInput`/`validateToolOutput`）、token usage 聚合、`ContextOverflowException` 三类（`PROMPT_OVERFLOW`/`COMPLETION_OVERFLOW`/`ACCUMULATED_OVERFLOW`）、`EngineException` 层级 + cause 链。
+
 ## 1. 背景与目标
 
 ### 1.1 为什么需要
@@ -33,6 +37,8 @@
 - 不实现真实 token 计数（只定义 SPI 钩子，留待 provider adapter 实现）。
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 AgentEngine
 

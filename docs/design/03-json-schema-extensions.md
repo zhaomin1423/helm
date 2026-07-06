@@ -6,6 +6,10 @@
 
 ---
 
+## 实现状态（2026-07-05）
+
+**✓ 已实现**。`JsonSchema.fromType` 支持 Map、enum、optional/nullability、description，以及 `UUID`/`URI`/`URL`、`BigDecimal`/`BigInteger`、时序类型（`Instant`/`LocalDate`/...）、`Set`、嵌套 `Optional` unwrap。
+
 ## 1. 背景与目标
 
 `JsonSchema` 是 Helm 把 Java 类型（`TypeDescriptor`）映射到 provider tool input schema 的唯一桥梁。它当前只覆盖了最基本的 Java 类型子集，导致大量常见 tool 入参形态无法表达：
@@ -35,6 +39,8 @@
 ---
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 当前 `JsonSchema` 定义
 

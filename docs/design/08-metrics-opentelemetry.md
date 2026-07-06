@@ -2,6 +2,10 @@
 
 > 组件编号：#8 · 来源 milestone：M9 · 状态：proposed · 关联组件：#1 streaming、#2 engine hardening、#7 rate limiting、#11 api governance
 
+## 实现状态（2026-07-05）
+
+**✓ 已实现**。`OpenTelemetryRuntimeObserver`：metrics（`helm.operation.duration`/`helm.operation.failure`、`helm.tool.duration`、`helm.token.usage.input`/`helm.token.usage.output`）+ tracing + `ContentCaptureLevel`（`SUMMARY`/`FULL`）+ `RedactingEventRedactor` + span TTL/上限/`AutoCloseable` drain。
+
 ## 1. 背景与目标
 
 ### 1.1 为什么需要
@@ -49,6 +53,8 @@
 - `docs/design/README.md` 第 2 节缺口行 #8 引用本文件。
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 RuntimeEventObserver SPI（已存在）
 

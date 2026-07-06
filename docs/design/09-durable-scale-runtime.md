@@ -5,6 +5,10 @@
 >
 > **本设计为 Post-GA 前瞻**，不急于实现。M11 的复杂度在于 lease/recovery 与 idempotency，必须等同步 runtime（M0–M10）稳定后再启动（见 roadmap §6 偏差记录「将高级 durable execution 作为 Post-GA 方向」）。
 
+## 实现状态（2026-07-05）
+
+**🟡 部分实现**。已实现：`WorkQueue` + claim/lease/renew/recovery + `AgentRuntime.durable`（`@Preview`）+ `LeaseManager`（原子 claim、按 operationId 认领、幂等恢复、recover-before-requeue）。仍待实现：`TurnJournal`（仅 SPI，无实现）、stream chunk recovery、durable cancellation、provider routing/fallback、remote/container sandbox（无 `helm-sandbox-remote` 模块）。
+
 ## 1. 背景与目标
 
 ### 1.1 为什么需要
@@ -40,6 +44,8 @@
 - 不替代 #7 rate limiting——rate limit 在 admission 前，durable queue 在 admission 后。
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 同步执行路径
 

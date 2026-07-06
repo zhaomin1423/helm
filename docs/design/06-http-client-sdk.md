@@ -3,6 +3,10 @@
 > 状态：设计草案 · 来源：[`docs/roadmap.md`](../roadmap.md) M6「Java client SDK」+ 模块图 `helm-client`
 > 关联：[#1 streaming](01-streaming-api.md) · [#5 authorizer](05-authorizer-security-context.md) · [#7 rate limiting](07-rate-limiting.md) · [#11 api governance](11-api-governance.md)
 
+## 实现状态（2026-07-05）
+
+**✓ 已实现**。`helm-client`：`HelmClient` sync + `promptStream` 增量流式、`ClientErrorMapper`（保留未映射 server code 于 `details.serverCode`）、`SseParser`、`RetryPolicy`、`AutoCloseable`（关闭 `HttpClient`）。
+
 ## 1. 背景与目标
 
 ### 1.1 为什么需要
@@ -32,6 +36,8 @@ Helm 已通过 `helm-http-core` + `helm-http-servlet` 把 runtime 暴露为 HTTP
 - 不直接依赖 `helm-runtime`（client 是远程调用，不应把 runtime 拖进消费方 classpath）。
 
 ## 2. 现状与缺口
+
+> **注**：以下缺口分析反映设计时的现状；当前实现状态见文首「实现状态（2026-07-05）」。
 
 ### 2.1 现有 HTTP 路由
 

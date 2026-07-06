@@ -11,31 +11,36 @@
 
 Helm 已完成系统设计 Milestone 1–5（core/engine/runtime、provider、sandbox、HTTP、CLI、Spring Boot starter、JDBC 持久化、logging observer），并在 2026-07-05 补齐了 Memory / Session 管理 / 历史裁剪。这些是**已落地**的基座。
 
-要推进到生产可用，仍有一批横向能力缺失。这些能力不能在一篇文档里塞下，否则设计会失焦、互相耦合。本目录把它们按组件拆开，每篇文档回答一个问题：
+本目录最初是为 `docs/roadmap.md` 中尚未实现的生产能力预先给出的**前瞻性**组件级设计方案：每个组件一份文档，独立设计、互相对齐。截至 2026-07-05（post-review-fix，main @ a615409），11 个设计组件中**绝大多数已落地基础实现**（构建 22 模块、809 测试通过、Spotless 干净）。本目录现在的作用是：
 
-> 这个组件**现在缺什么、应该长成什么样、放在哪个模块、暴露什么 SPI/API、如何测试、如何验收**？
+- 作为各组件的**设计参考**（SPI/API 形态、模块归属、数据流、验收标准）；
+- 同时作为**实现状态记录**——第 2、3 节标注每个组件的实现程度（`✓` 已实现 / `🟡` 部分或基础实现 / `◯` 未实现）。
 
-设计完成后，每一篇都可以独立进入 `docs/superpowers/plans/` 的实施计划阶段。
+仍按"每篇文档回答一个问题"的方式组织：
 
-## 2. 缺口分析（2026-07-05）
+> 这个组件**应该长成什么样、放在哪个模块、暴露什么 SPI/API、如何测试、如何验收**？现在实现到哪一步？
 
-对照 `docs/roadmap.md` 第 3.1 节"仍留待后续 milestone 的生产能力"与第 4 节 milestone 表中 `proposed` 的横向项，确认以下 11 个缺失组件。每条都给出：来源 milestone、现状、设计文档。
+剩余未完成项（主要是 #9 Durable scale 的 journal/stream-recovery/cancellation、#4 真实向量存储适配器、#7 多维/分布式限流、#9 远程/容器沙箱）继续在 `docs/roadmap.md` 第 7 节跟踪。
 
-| # | 组件 | 来源 | 现状 | 设计文档 |
+## 2. 缺口分析与实现状态（2026-07-05，post-review-fix @ a615409）
+
+对照 `docs/roadmap.md` 第 3.1 节"仍留待后续 milestone 的生产能力"与第 4 节 milestone 表中 `proposed` 的横向项，原确认 11 个缺失组件。截至 2026-07-05，**绝大多数已实现基础形态**。每条给出：来源、当前现状与实现状态、设计文档。状态约定：`✓` 已实现 / `🟡` 部分或基础实现 / `◯` 未实现。
+
+| # | 组件 | 来源 | 现状与实现状态 | 设计文档 |
 | --- | --- | --- | --- | --- |
-| 1 | Streaming API 暴露 | M3 | `ModelProvider.stream` 已用 `Flow.Publisher`，但 `AgentSession.prompt` / `AgentEngine.run` 同步聚合，不向调用方暴露增量 token | [`01-streaming-api.md`](01-streaming-api.md) |
-| 2 | Engine hardening | M3 | `AgentEngine` 无 engine 事件、tool input/output 校验、token usage 聚合、context overflow 分类；`TurnRunner` 把异常包成裸 `IllegalStateException` | [`02-engine-hardening.md`](02-engine-hardening.md) |
-| 3 | JsonSchema 类型扩展 | M3 | 只支持 string/int/number/bool/record/array；缺 Map、enum、optional/nullability、description | [`03-json-schema-extensions.md`](03-json-schema-extensions.md) |
-| 4 | Memory 语义检索 | post-preview | `MemoryStore.search` 为关键字匹配，SPI 已预留替换点；缺向量化嵌入与相似度检索 | [`04-memory-semantic-retrieval.md`](04-memory-semantic-retrieval.md) |
-| 5 | Authorizer / SecurityContext | M6 | `AgentRuntime` / HTTP 路由均无授权扩展点；agent instance id 不代表授权 | [`05-authorizer-security-context.md`](05-authorizer-security-context.md) |
-| 6 | HTTP Client SDK | M6 | 无 `helm-client` 模块；外部 Java 应用只能直接拼 HTTP | [`06-http-client-sdk.md`](06-http-client-sdk.md) |
-| 7 | Rate limiting / admission | post-preview | dispatch 与 prompt 同步执行，无并发上限、无配额、无排队 | [`07-rate-limiting.md`](07-rate-limiting.md) |
-| 8 | Metrics & OpenTelemetry | M9 | 仅有 `helm-observability-logging`；无 metrics、无 trace 关联、无 content capture policy、无 redaction 注解 | [`08-metrics-opentelemetry.md`](08-metrics-opentelemetry.md) |
-| 9 | Durable scale runtime | M11 | 同步执行；无 async workers、per-session FIFO 队列、lease/recovery、turn journal、stream chunk recovery、cancellation、provider routing/fallback、remote sandbox | [`09-durable-scale-runtime.md`](09-durable-scale-runtime.md) |
-| 10 | Release engineering | M10 | 无 CHANGELOG/CONTRIBUTING/license 决策/Maven wrapper/CI/publishing/blueprints/adapter guides | [`10-release-engineering.md`](10-release-engineering.md) |
-| 11 | API governance | M0 收尾 | 未写明 public/SPI/internal package 规则、pre-1.0 兼容策略、exception 稳定 code 与 safe details 规范 | [`11-api-governance.md`](11-api-governance.md) |
+| 1 | Streaming API 暴露 | M3 | ✓ `promptStream` / `PromptStreamEvent` / SSE 路由 / 客户端增量流 / 订阅取消均已落地。◯ 仅 durable stream-chunk recovery | [`01-streaming-api.md`](01-streaming-api.md) |
+| 2 | Engine hardening | M3 | ✓ `EngineEvent`（含 failure 变体 `ModelFailed`/`ToolFailed`/`TurnFailed`）、tool input/output 校验、token usage 聚合、`ContextOverflowException`（PROMPT/COMPLETION/ACCUMULATED 三类）、`EngineException` cause chaining | [`02-engine-hardening.md`](02-engine-hardening.md) |
+| 3 | JsonSchema 类型扩展 | M3 | ✓ Map / enum / optional / nullability / description / UUID / URI / URL / BigDecimal / temporal / Set / 嵌套 Optional | [`03-json-schema-extensions.md`](03-json-schema-extensions.md) |
+| 4 | Memory 语义检索 | post-preview | ✓ `IndexedEmbeddingStore` 解耦 SPI、`SemanticMemoryStore`、维度校验、`FakeEmbeddingProvider`。◯ 真实向量存储适配器（未来） | [`04-memory-semantic-retrieval.md`](04-memory-semantic-retrieval.md) |
+| 5 | Authorizer / SecurityContext | M6 | ✓ `HelmSecurityContext`/`HelmAuthorizer`/`HelmAction`（含 `TOOL_EXECUTE`/`MEMORY_WRITE`/`SANDBOX_COMMAND`）/`HelmResource`、`AgentRuntime` admission `authorize()`、HTTP `SecurityContextExtractor`（dev opt-in） | [`05-authorizer-security-context.md`](05-authorizer-security-context.md) |
+| 6 | HTTP Client SDK | M6 | ✓ `helm-client` 模块：`HelmClient` 同步/流式、`ClientErrorMapper` 保留 server code、`SseParser`、`RetryPolicy`、`AutoCloseable` | [`06-http-client-sdk.md`](06-http-client-sdk.md) |
+| 7 | Rate limiting / admission | post-preview | 🟡 基础已实现：`RateLimiter`/`RateLimitKey` + admission `acquireRate`。◯ 多维 / 分布式限流（未来） | [`07-rate-limiting.md`](07-rate-limiting.md) |
+| 8 | Metrics & OpenTelemetry | M9 | ✓ `OpenTelemetryRuntimeObserver`：metrics（`helm.operation.duration`/`failure`、`helm.tool.duration`、`helm.token.usage.input/output`）+ tracing + `ContentCaptureLevel`（SUMMARY/FULL）+ `RedactingEventRedactor` + span TTL/cap/AutoCloseable | [`08-metrics-opentelemetry.md`](08-metrics-opentelemetry.md) |
+| 9 | Durable scale runtime | M11 | 🟡 部分：`WorkQueue` + claim/lease/renew/recovery + `AgentRuntime.durable` + `LeaseManager`，atomic/idempotent。◯ 未完成：`TurnJournal`（仅 SPI）、stream chunk recovery、durable cancellation、provider routing/fallback、remote/container sandbox | [`09-durable-scale-runtime.md`](09-durable-scale-runtime.md) |
+| 10 | Release engineering | M10 | ✓ Apache 2.0 license、CHANGELOG、CONTRIBUTING、CI、mvnw、`helm-bom`、adapter guides | [`10-release-engineering.md`](10-release-engineering.md) |
+| 11 | API governance | M0 收尾 | ✓ `ErrorCode` 注册表 + `stable()` 契约测试、`@Preview`/`@Experimental`、`RuntimeStore` 拆分 sub-interfaces、`io.agent.helm`、`helm-bom`、error-codes 文档 | [`11-api-governance.md`](11-api-governance.md) |
 
-依赖关系（实现顺序建议）：
+依赖关系（实现顺序建议；当前实现状态见上表）：
 
 ```text
 11 API governance ──┐
@@ -51,7 +56,7 @@ Helm 已完成系统设计 Milestone 1–5（core/engine/runtime、provider、sa
 
 ## 3. 架构图（更新版）
 
-下图在 `README.md` 现有抽象调用图基础上，标注模块实现状态与未来缺口组件的落点。`✓` 已实现，`◯` 待实现（对应上方编号）。
+下图在 `README.md` 现有抽象调用图基础上，标注模块实现状态与未来缺口组件的落点。`✓` 已实现，`🟡` 部分或基础实现，`◯` 待实现（对应上方编号）。
 
 ### 3.1 分层架构
 
@@ -66,12 +71,12 @@ Helm 已完成系统设计 Milestone 1–5（core/engine/runtime、provider、sa
           │                                                    │
           │  ┌─────────────┐  ┌──────────────┐  ┌──────────┐ │
           │  │ Spring Boot │  │ CLI (Picocli)│  │ HTTP SDK │ │
-          │  │ starter  ✓   │  │          ✓   │  │  ◯ #6    │ │
+          │  │ starter  ✓   │  │          ✓   │  │  ✓ #6    │ │
           │  └──────┬──────┘  └──────┬───────┘  └────┬─────┘ │
           │         │                │                │       │
           │  ┌──────┴────────────────┴────────────────┴─────┐ │
           │  │ HTTP core (DTO/route/error)  ✓  + Servlet ✓  │ │
-          │  │        + HelmAuthorizer ◯ #5  + rate limit ◯ #7│
+          │  │        + HelmAuthorizer ✓ #5  + rate limit 🟡 #7│
           │  └──────────────────────┬─────────────────────────┘ │
           └─────────────────────────┼──────────────────────────┘
                                     │
@@ -81,41 +86,41 @@ Helm 已完成系统设计 Milestone 1–5（core/engine/runtime、provider、sa
 │    WorkflowRuntime (invoke / getRun / listRuns / events)                       │
 │    registries (agent/workflow/tool/skill/provider)                             │
 │    EventRedactor + EventBus + InMemoryRuntimeStore + FakeProvider             │
-│    admission / rate limiting ◯ #7  →  durable queue ◯ #9                       │
+│    admission / rate limiting 🟡 #7  →  durable queue 🟡 #9                    │
 └───────────────────────────────────┬──────────────────────────────────────────┘
                                     │
 ┌───────────────────────────────────┴──────────────────────────────────────────┐
-│  执行引擎层  helm-agent-engine  ✓（基础） / ◯ #2 hardening                     │
+│  执行引擎层  helm-agent-engine  ✓（基础） / ✓ #2 hardening                     │
 │    AgentLoop / TurnRunner / ToolCallOrchestrator / ToolExecutor               │
-│    ModelStreamNormalizer  +  streaming 暴露 ◯ #1                             │
-│    engine events + tool validation + usage aggregation + overflow 分类 ◯ #2  │
+│    ModelStreamNormalizer  +  streaming 暴露 ✓ #1                             │
+│    engine events + tool validation + usage aggregation + overflow 分类 ✓ #2  │
 └───────────────────────────────────┬──────────────────────────────────────────┘
                                     │
 ┌───────────────────────────────────┴──────────────────────────────────────────┐
 │  契约层  helm-core  ✓                                                         │
 │    AgentDefinition / WorkflowDefinition / Tool / Skill / Sandbox /           │
 │    ModelProvider / RuntimeStore / MemoryStore / 事件 / 错误(HelmException)     │
-│    JsonSchema ✓（基础） / ◯ #3 扩展    MemoryStore.search ◯ #4 语义检索      │
-│    HelmSecurityContext / HelmAuthorizer SPI ◯ #5                              │
+│    JsonSchema ✓（基础） / ✓ #3 扩展    MemoryStore.search ✓ #4 语义检索     │
+│    HelmSecurityContext / HelmAuthorizer SPI ✓ #5                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 
   横切适配器（独立模块，只依赖稳定 SPI）：
     helm-provider-openai  ✓     helm-provider-anthropic  ✓
     helm-sandbox-local  ✓      helm-persistence-jdbc  ✓（RuntimeStore + MemoryStore）
-    helm-observability-logging  ✓   helm-observability-opentelemetry  ◯ #8
+    helm-observability-logging  ✓   helm-observability-opentelemetry  ✓ #8
     remote / container sandbox  ◯ #9
 ```
 
 ### 3.2 目标模块图
 
-`✓` 已实现，`◯` 待实现。
+`✓` 已实现，`🟡` 部分实现，`◯` 待实现。
 
 ```text
 helm/
-  helm-core/                      ✓   契约层（+ authorizer SPI #5、json schema 扩展 #3）
-  helm-agent-engine/              ✓   执行引擎（+ hardening #2、streaming 暴露 #1）
-  helm-runtime/                   ✓   运行时（+ admission/rate limit #7、durable #9）
-  helm-runtime-testkit/           ◯   #10 提供（合约测试集中模块）
+  helm-core/                      ✓   契约层（+ authorizer SPI ✓ #5、json schema 扩展 ✓ #3）
+  helm-agent-engine/              ✓   执行引擎（+ hardening ✓ #2、streaming 暴露 ✓ #1）
+  helm-runtime/                   ✓   运行时（+ admission/rate limit 🟡 #7、durable 🟡 #9）
+  helm-runtime-testkit/           ✓   #10 提供（合约测试集中模块）
   helm-provider-openai/           ✓
   helm-provider-anthropic/       ✓
   helm-persistence-jdbc/          ✓
@@ -123,32 +128,32 @@ helm/
   helm-sandbox-remote/            ◯   #9
   helm-http-core/                 ✓
   helm-http-servlet/              ✓
-  helm-client/                    ◯   #6
+  helm-client/                    ✓   #6
   helm-cli/                       ✓
   helm-spring-boot-starter/       ✓
   helm-observability-logging/     ✓
-  helm-observability-opentelemetry/ ◯ #8
-  helm-memory-semantic/           ◯   #4（可选独立模块，或并入 persistence 适配器）
+  helm-observability-opentelemetry/ ✓ #8
+  helm-memory-semantic/           ✓   #4（可选独立模块，或并入 persistence 适配器）
   examples/
   docs/
 ```
 
-### 3.3 调用链（含未来组件）
+### 3.3 调用链（含组件落点）
 
 ```text
 Application
-  → Client SDK #6 / HTTP Servlet / CLI
-    → [HelmAuthorizer #5] [RateLimiter #7]
+  → Client SDK ✓ #6 / HTTP Servlet / CLI
+    → HelmAuthorizer ✓ #5  RateLimiter 🟡 #7
       → AgentRuntime.dispatch / prompt
         → OperationRecord admission (RuntimeStore)
-          → AgentEngine #2
+          → AgentEngine ✓ #2
             → TurnRunner → ModelProvider.stream
-              → engine events → RuntimeEventObserver (logging ✓ / OTel #8 / metrics #8)
+              → engine events → RuntimeEventObserver (logging ✓ / OTel ✓ #8 / metrics ✓ #8)
             → ToolCallOrchestrator → ToolExecutor → Tool
-            → ContextManager (overflow 分类 #2) / usage 聚合 #2
-          → [durable queue #9: lease / journal / recovery]
+            → ContextManager (overflow 分类 ✓ #2) / usage 聚合 ✓ #2
+          → durable queue 🟡 #9（lease/recovery ✓；journal/stream-recovery ◯）
         → AgentSessionState 持久化
-        → streaming 暴露 #1 → 调用方
+        → streaming 暴露 ✓ #1 → 调用方
 ```
 
 ## 4. 统一设计规范
@@ -210,4 +215,4 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PA
 - **评审某一组件**：直接读对应编号文档，每篇自洽。
 - **理解全局**：先读本 README 第 2、3 节，再按依赖关系（第 2 节末图）阅读。
 - **进入实施**：选某一组件文档，基于其第 7 节验收标准 + 第 4 节设计，在 `docs/superpowers/plans/` 新建实施计划。
-- **更新进度**：实施完成后回写 `docs/roadmap.md` 第 7 节进度日志，并把对应缺口行从 ◯ 改为 ✓。
+- **更新进度**：实施完成后回写 `docs/roadmap.md` 第 7 节进度日志，并把对应行在状态列（✓/🟡/◯）与"现状"中更新。截至 2026-07-05，11 个组件中 9 个为 `✓`、2 个为 `🟡`（#7 基础限流、#9 durable scale 部分），剩余未完成项（durable journal/stream-recovery/cancellation、真实向量存储适配器、多维/分布式限流、remote/container sandbox）继续在 `docs/roadmap.md` 第 7 节跟踪。
